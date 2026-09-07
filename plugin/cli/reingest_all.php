@@ -256,7 +256,7 @@ foreach ($modules as $mod) {
     // chunks atomically — it writes the new revision, then drops the old one
     // only once that succeeded. Deleting here re-opens the window this fix
     // closes: on 2026-09-07 the Infomaniak embeddings API went down between
-    // the delete and the ingest, and modules 1293-1295 were left with zero
+    // the delete and the ingest, and modules 1293, 1294 and 1297 were left with zero
     // chunks, invisible to the assistant despite still existing in Moodle.
     try {
         $client->ingest_module($courseId, $cmid, $modname, $payload);

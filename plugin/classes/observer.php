@@ -87,7 +87,7 @@ class observer {
             // atomically, writing the new revision and dropping the old one only
             // once that succeeded. Deleting here would leave the module empty
             // whenever the embeddings API fails in between, which is how course
-            // 109 lost modules 1293-1295 during the 2026-09-07 outage.
+            // 109 lost modules 1293, 1294 and 1297 in the 2026-09-07 outage.
             $client->ingest_module($course_id, $cmid, $modname, $payload);
 
             self::upsert_index_record($cmid, $course_id, $hash);
