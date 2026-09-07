@@ -87,6 +87,8 @@ def _build_heading_translation_prompt(
             "ambiguïtés de vocabulaire technique. Ne le traduis pas, n'en "
             "reprends aucune phrase, ne t'en sers que pour choisir le bon "
             "terme métier.\n"
+            "Emploie le terme français du métier : pas de mot anglais, pas de "
+            "translittération d'un terme technique.\n"
             "Réponds avec UNIQUEMENT le titre traduit : pas de guillemets, pas "
             "d'explication, pas de reformulation, pas de phrase complète.\n\n"
             f"Extrait de la section (vocabulaire seulement) :\n{context[:600]}\n\n"
@@ -95,6 +97,8 @@ def _build_heading_translation_prompt(
     return (
         "Traduis en français ce titre de section d'un cours technique "
         "(artisanat, métiers d'art).\n"
+        "Emploie le terme français du métier : pas de mot anglais, pas de "
+        "translittération d'un terme technique.\n"
         "Réponds avec UNIQUEMENT le titre traduit : pas de guillemets, pas "
         "d'explication, pas de reformulation, pas de phrase complète.\n\n"
         f"Titre original ({source_lang}) :\n{heading}"

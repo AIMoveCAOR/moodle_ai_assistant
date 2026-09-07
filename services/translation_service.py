@@ -188,11 +188,22 @@ def build_chunk_translation_prompt(chunk_text: str, source_lang: str) -> str:
     `chunk_text` may already include a heading breadcrumb baked in by
     SemanticChunker (see course_rag_service.py) — translate the whole thing
     as plain text, there's no markup to preserve.
+
+    The French-vocabulary instruction is not decoration: translating a Greek
+    glassblowing page, the model rendered "ανοπτητήριο" (annealing oven) as
+    the English "annealer" rather than "four de recuit". English leaking into
+    the French corpus hurts retrieval twice over — the chunk no longer matches
+    the French term a learner would search for, and the breadcrumb translator
+    takes this text as its glossary, so one English word in a body propagates
+    into every heading under it.
     """
     return (
         "Traduis le contenu pédagogique suivant en français, en conservant tout son "
         "sens technique et sa structure (y compris un éventuel titre de section en "
         "début de texte).\n\n"
+        "Emploie systématiquement le terme français du métier : n'introduis aucun mot "
+        "anglais et ne translittère pas un terme technique. Ne conserve un mot d'origine "
+        "étrangère que s'il est lui-même le terme consacré en français dans ce métier.\n\n"
         f'Contenu original ({source_lang}) :\n"{chunk_text}"\n\n'
         "Réponds avec UNIQUEMENT la traduction française, sans explication."
     )
