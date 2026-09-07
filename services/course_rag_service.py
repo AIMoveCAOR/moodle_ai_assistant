@@ -4,6 +4,7 @@ import base64
 import io
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,6 +16,9 @@ from config.settings import ConfigurationManager
 from services import translation_service
 
 logger = logging.getLogger(__name__)
+
+# The Infomaniak embeddings API accepts at most 99 items per call.
+INGEST_BATCH_SIZE = 99
 
 # ─────────────────────────────────────────────────────────────────
 # Semantic chunker
@@ -392,6 +396,9 @@ class CourseRAGService:
         self.chunker = SemanticChunker()
         # Cache open Chroma collection handles keyed by course_id string
         self._collections: Dict[str, Chroma] = {}
+        # Serializes Chroma writes now that the ingest/delete endpoints run in
+        # a thread pool rather than on the event loop (see api/routes.py).
+        self._write_lock = threading.Lock()
 
         self._langid = translation_service.load_langid() if config_manager else None
         self._translation_llm = None
@@ -485,12 +492,47 @@ class CourseRAGService:
         chunks = self._translate_chunks_if_needed(chunks, rag_config)
 
         collection = self._get_collection(course_id)
-        # Infomaniak embedding API accepts at most 99 items per call.
-        batch_size = 99
-        for i in range(0, len(chunks), batch_size):
-            collection.add_documents(chunks[i : i + batch_size])
+
+        # Index the new revision first, drop the old one only once that
+        # succeeded. The obvious order — delete then add — loses the module
+        # entirely whenever the embeddings API is down, which is exactly what
+        # the 2026-09-07 Infomaniak outage did to course 109: chunks deleted,
+        # replacements never written, pages invisible to the assistant while
+        # still sitting in Moodle. Stale chunks beat no chunks.
+        #
+        # The lock keeps concurrent ingests of the *same* module from
+        # interleaving their add/delete pairs and deleting each other's fresh
+        # chunks. It covers only the Chroma writes, never the translation
+        # above it, so a slow module does not hold anyone else up.
+        with self._write_lock:
+            stale_ids = list(collection.get(where={"module_id": module_id}).get("ids") or [])
+            added_ids: List[str] = []
+            try:
+                for i in range(0, len(chunks), INGEST_BATCH_SIZE):
+                    batch_ids = collection.add_documents(chunks[i : i + INGEST_BATCH_SIZE])
+                    added_ids.extend(batch_ids or [])
+            except Exception:
+                # Roll back a partial write, so the module holds one coherent
+                # revision rather than the front half of two.
+                if added_ids:
+                    try:
+                        collection.delete(ids=added_ids)
+                    except Exception as cleanup_error:
+                        logger.error(
+                            f"Module {module_id}: could not roll back {len(added_ids)} "
+                            f"partially indexed chunks: {cleanup_error}"
+                        )
+                logger.error(
+                    f"Module {module_id}: indexing failed, kept the previous "
+                    f"{len(stale_ids)} chunks"
+                )
+                raise
+            if stale_ids:
+                collection.delete(ids=stale_ids)
+
         logger.info(
             f"Indexed {len(chunks)} chunks for course {course_id} / module {module_id}"
+            + (f" (replaced {len(stale_ids)})" if stale_ids else "")
         )
         return len(chunks)
 
@@ -753,10 +795,12 @@ class CourseRAGService:
         """
         try:
             collection = self._get_collection(course_id)
-            results = collection.get(where={"module_id": module_id})
-            ids = results.get("ids", [])
+            with self._write_lock:
+                results = collection.get(where={"module_id": module_id})
+                ids = results.get("ids", [])
+                if ids:
+                    collection.delete(ids=ids)
             if ids:
-                collection.delete(ids=ids)
                 logger.info(
                     f"Deleted {len(ids)} chunks for course {course_id} / module {module_id}"
                 )

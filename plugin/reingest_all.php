@@ -114,15 +114,9 @@ foreach ($modules as $mod) {
         continue;
     }
 
-    // Delete existing ChromaDB chunks (safe if already empty).
-    try {
-        $client->delete_module($course_id, $cmid);
-    } catch (\Throwable $e) {
-        // Non-fatal: log but continue.
-        error_log("CraftPilot reingest: delete failed for cmid={$cmid}: " . $e->getMessage());
-    }
-
-    // Ingest into ChromaDB.
+    // Ingest into ChromaDB. No delete first: ingest replaces the module's
+    // chunks atomically, so a failure leaves the previous revision in place
+    // rather than an empty module. See cli/reingest_all.php.
     try {
         $client->ingest_module($course_id, $cmid, $modname, $payload);
     } catch (\Throwable $e) {

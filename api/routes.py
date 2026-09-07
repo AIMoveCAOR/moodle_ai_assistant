@@ -1,5 +1,6 @@
 """API routes for the Moodle AI Assistant backend server."""
 
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -414,8 +415,15 @@ async def ingest_course_module(request: CourseModuleIngestRequest):
     Called by the Moodle plugin's event observer immediately after a teacher
     creates or updates a course module.  Chunking and embedding happen here.
     """
+    # Off the event loop: chunking, translation and embedding are all
+    # synchronous and can take minutes when the embeddings provider is slow.
+    # Run inline, they freeze the whole worker — during the 2026-09-07
+    # Infomaniak outage a single stalled ingest blocked every other request
+    # for three minutes, so unrelated deletes timed out and learner chat
+    # stalled with them, even though the chat pipeline is itself threaded.
     try:
-        count = pipeline.course_rag_service.ingest_module(
+        count = await asyncio.to_thread(
+            pipeline.course_rag_service.ingest_module,
             course_id=request.course_id,
             module_id=request.module_id,
             module_type=request.module_type,
@@ -438,7 +446,8 @@ async def ingest_course_module(request: CourseModuleIngestRequest):
 async def delete_course_module(request: CourseModuleDeleteRequest):
     """Remove all chunks belonging to a course module from ChromaDB."""
     try:
-        deleted = pipeline.course_rag_service.delete_module(
+        deleted = await asyncio.to_thread(
+            pipeline.course_rag_service.delete_module,
             course_id=request.course_id,
             module_id=request.module_id,
         )
@@ -451,7 +460,9 @@ async def delete_course_module(request: CourseModuleDeleteRequest):
 async def delete_course(request: CourseDeleteRequest):
     """Drop the entire ChromaDB collection for a course."""
     try:
-        pipeline.course_rag_service.delete_collection(course_id=request.course_id)
+        await asyncio.to_thread(
+            pipeline.course_rag_service.delete_collection, course_id=request.course_id
+        )
         return {"status": "ok", "collection_deleted": f"course_{request.course_id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
