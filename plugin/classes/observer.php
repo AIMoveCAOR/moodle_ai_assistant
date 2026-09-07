@@ -83,8 +83,11 @@ class observer {
             }
 
             $client = new backend_client();
-            // Remove stale chunks first, then ingest fresh ones.
-            $client->delete_module($course_id, $cmid);
+            // No delete first: the backend's ingest replaces a module's chunks
+            // atomically, writing the new revision and dropping the old one only
+            // once that succeeded. Deleting here would leave the module empty
+            // whenever the embeddings API fails in between, which is how course
+            // 109 lost modules 1293, 1294 and 1297 in the 2026-09-07 outage.
             $client->ingest_module($course_id, $cmid, $modname, $payload);
 
             self::upsert_index_record($cmid, $course_id, $hash);

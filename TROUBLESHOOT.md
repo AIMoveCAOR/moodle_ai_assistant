@@ -234,7 +234,95 @@ grep "  rerank " /tmp/craftpilot_backend.log | tail -20
 
 ---
 
-## 7. Key file locations
+## 7. Ingest failing with timeouts (embeddings provider down)
+
+**Symptom.** A re-ingest run starts fine, then every module fails:
+
+```
+[3/8] ERROR cmid=1293 (page): ingest failed - cURL error [POST /ingest-course-module]:
+      Operation timed out after 60003 milliseconds with 0 bytes received
+[4/8] warn  cmid=1294: delete failed - ...  Operation timed out after 60002 milliseconds
+```
+
+**Do not debug the plugin.** Timeouts on both ingest *and* delete point at the
+backend being blocked, not at the caller. Check which Infomaniak endpoint is
+failing:
+
+```bash
+grep "v1/embeddings" /tmp/craftpilot_backend.log | tail -20
+grep "v1/chat/completions" /tmp/craftpilot_backend.log | tail -5
+```
+
+The two are independent services. On 2026-09-07 `/chat/completions` returned
+200 throughout while `/embeddings` returned 500 — translation worked, indexing
+did not. Nothing to fix on our side: wait for the provider, then re-run.
+
+`Retrying request to /embeddings` in the log is the OpenAI client's own retry;
+each attempt waits the full ~60s before failing, so one module can spend three
+minutes going nowhere.
+
+**Why unrelated requests time out too.** The backend runs a single uvicorn
+worker. Before the fix, `/ingest-course-module` ran its synchronous work
+directly in the async handler, so a stalled embeddings call froze the entire
+event loop — including learner chat, whose pipeline is threaded but still has
+to resume its `await`s on that loop. The delete "failures" were not failures;
+they were queued behind the stall and executed seconds after the caller gave
+up:
+
+```
+12:17:43  third embeddings 500        ← blocking ends
+12:17:44  Deleted 7 chunks ... module 1294   ← the "failed" delete, one second later
+```
+
+Ingest and delete now run via `asyncio.to_thread` (`api/routes.py`), so a slow
+provider no longer takes the server down with it.
+
+**Checking whether a module was left empty.** Re-ingest used to delete a
+module's chunks before adding the replacements, so an outage in between left
+the module with zero chunks — present in Moodle, invisible to the assistant.
+Ingest now replaces atomically (write the new revision, drop the old one only
+on success), and the delete-then-ingest calls have been removed from
+`cli/reingest_all.php`, `reingest_all.php` and `classes/observer.php`.
+
+To audit an index after an interrupted run — always from a **copy**, never the
+live file:
+
+```bash
+# /var/tmp, not /tmp: /tmp is a 2 GB volume and this file is ~300 MB. Filling
+# /tmp also costs the backend its log (see the unit's StandardOutput).
+cp /opt/craftpilot_backend/chroma_langchain_db/chroma.sqlite3 /var/tmp/check.sqlite3
+PYTHONNOUSERSITE=1 python3 - <<'EOF'
+import sqlite3, collections
+c = sqlite3.connect('/var/tmp/check.sqlite3')
+ids = [r[0] for r in c.execute(
+    "SELECT id FROM embedding_metadata WHERE key='course_id' AND (string_value='109' OR int_value=109)")]
+q = ('SELECT id,string_value,int_value FROM embedding_metadata '
+     'WHERE id IN (%s) AND key=\'module_id\'' % ','.join('?' * len(ids)))
+n = collections.Counter(s or i for _, s, i in c.execute(q, ids))
+for mod, count in sorted(n.items(), key=lambda x: str(x[0])):
+    print(mod, count)
+EOF
+```
+
+A module missing from that list, or with a count of 0, needs re-ingesting.
+Real output taken from course 109 straight after the 2026-09-07 outage — the
+course has eight modules, and 1293, 1294 and 1297 are simply absent:
+
+```
+1291 5
+1292 6
+1295 7
+1296 6
+1298 9
+```
+
+Note also that the survivors are a mix of revisions: 1291-1292 came from the
+run that failed partway, the rest are left over from the previous run. A plain
+re-run of the whole course is the fix — there is nothing to repair by hand.
+
+---
+
+## 8. Key file locations
 
 | What | Path |
 |---|---|

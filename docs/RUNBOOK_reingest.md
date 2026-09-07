@@ -101,6 +101,25 @@ sudo -u apache php /var/www/html/public/local/craftpilot/cli/reingest_all.php --
 
 `--resume` also retries only the modules that errored.
 
+### If modules start failing
+
+A run that suddenly errors on every module is almost always the embeddings
+provider, not this script. Check before touching anything:
+
+```bash
+grep "v1/embeddings" /tmp/craftpilot_backend.log | tail -20
+```
+
+`500 Internal Server Error` there means Infomaniak is down for embeddings —
+stop the run and wait, since every module will translate (costing tokens) and
+then fail to index. `/chat/completions` can be perfectly healthy at the same
+time; they are separate services.
+
+A failed module now keeps its previous chunks rather than being emptied:
+ingest writes the new revision and only then drops the old one. So an
+interrupted run leaves the corpus stale, never blank. TROUBLESHOOT.md §7 has
+the query to audit which modules hold what.
+
 ## 6. Afterwards
 
 ```bash

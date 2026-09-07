@@ -252,13 +252,12 @@ foreach ($modules as $mod) {
         continue;
     }
 
-    try {
-        $client->delete_module($courseId, $cmid);
-    } catch (\Throwable $e) {
-        // Non-fatal, same as the web version: the ingest below rewrites it.
-        cli_writeln("{$prefix} warn  cmid={$cmid}: delete failed - " . $e->getMessage());
-    }
-
+    // No delete_module() first. The backend's ingest replaces a module's
+    // chunks atomically — it writes the new revision, then drops the old one
+    // only once that succeeded. Deleting here re-opens the window this fix
+    // closes: on 2026-09-07 the Infomaniak embeddings API went down between
+    // the delete and the ingest, and modules 1293, 1294 and 1297 were left with zero
+    // chunks, invisible to the assistant despite still existing in Moodle.
     try {
         $client->ingest_module($courseId, $cmid, $modname, $payload);
     } catch (\Throwable $e) {
