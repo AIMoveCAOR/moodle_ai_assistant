@@ -12,6 +12,7 @@ services.course_rag_service — importable by all three without a cycle.
 """
 
 import logging
+import re
 import time
 from collections import Counter
 from typing import Any, Optional, Tuple
@@ -125,6 +126,45 @@ def extract_text(response: Any) -> str:
     return str(response.content).strip()
 
 
+# Statuses worth sending the same request again for: the server said it could
+# not serve this *now*, not that the request was wrong.
+RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _is_retryable(error: Exception) -> bool:
+    """Should this failure be retried?
+
+    Decided from the HTTP status, not the error text. On 2026-09-09 the
+    provider returned 503 Service Unavailable whose *body* was a load-balancer
+    page reading "404 page not found", and the OpenAI SDK surfaces the body as
+    the exception message. So the text said 404, the status said 503, and only
+    the status was true. Matching the text would have meant depending on the
+    wording of someone else's error page — it happens to work today and breaks
+    silently the day they reword it.
+
+    Falls back to the message only when no status is available at all, which
+    is the case for connection and timeout errors raised before any response.
+    """
+    for attribute in ("status_code", "http_status", "code"):
+        status = getattr(error, attribute, None)
+        if isinstance(status, int):
+            return status in RETRYABLE_STATUS_CODES
+
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status in RETRYABLE_STATUS_CODES
+
+    text = str(error).lower()
+    if any(word in text for word in ("timeout", "timed out", "connection", "temporarily")):
+        return True
+    # Last resort: the status as the SDK stringified it. Anchored to the
+    # documented "Error code: NNN" prefix so a 503 in the body text cannot
+    # masquerade as the status.
+    match = re.search(r"error code:\s*(\d{3})", text)
+    return bool(match) and int(match.group(1)) in RETRYABLE_STATUS_CODES
+
+
 def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> Optional[str]:
     """Invoke `llm` with `prompt`, returning the translated text or None.
 
@@ -138,12 +178,8 @@ def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> O
     rate limit. A retryable failure backs off exponentially (5s, 10s, 20s...);
     anything else fails immediately.
 
-    What counts as retryable is deliberately broader than 429. On 2026-09-09
-    the endpoint returned "404 page not found" in bursts: the first module of
-    each run translated fine and the rest failed instantly, then the next run
-    succeeded again from a cold start. A 404 that comes and goes like that is
-    the provider shedding load, not a URL that stopped existing — and with no
-    retry it cost 37 of course 109's 53 chunks in one run.
+    What counts as retryable is deliberately broader than 429, and is decided
+    from the HTTP status rather than the error text — see `_is_retryable`.
 
     Client errors stay non-retryable. A 401 or a 400 means the request itself
     is wrong, and repeating it just turns a fast failure into a slow one.
@@ -156,23 +192,10 @@ def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> O
             text = extract_text(response)
             return text or None
         except Exception as e:
-            message = str(e)
-            lowered = message.lower()
-            retryable = (
-                "429" in message
-                or "rate_limit" in lowered
-                # Transient upstream failures. Both have hit this deployment:
-                # 500s from /embeddings on 2026-09-07, 404s from /chat on
-                # 2026-09-09, each in bursts that cleared on their own.
-                or "404" in message
-                or any(f" {code}" in f" {message}" for code in ("500", "502", "503", "504"))
-                or "timeout" in lowered
-                or "timed out" in lowered
-            )
-            if retryable and attempt < max_retries:
+            if _is_retryable(e) and attempt < max_retries:
                 attempt += 1
                 logger.warning(
-                    f"translate_to_french: retryable failure ({message[:80]}), "
+                    f"translate_to_french: retryable failure ({str(e)[:80]}), "
                     f"retrying in {delay:.0f}s (attempt {attempt}/{max_retries})"
                 )
                 time.sleep(delay)
