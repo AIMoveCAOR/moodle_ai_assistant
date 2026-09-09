@@ -23,6 +23,24 @@ class backend_client {
     /** cURL timeout in seconds for ingestion calls (large files may take longer). */
     private const TIMEOUT = 60;
 
+    /**
+     * Effective ingest timeout. Defaults to TIMEOUT, which is sized for the
+     * observer: that path runs inside a teacher's page save, so a long wait
+     * there is a teacher staring at a spinner.
+     *
+     * The bulk re-ingest has nobody waiting on it and needs the room instead.
+     * Translating a module is several LLM calls, and the craft glossary made
+     * each prompt longer — a seven-chunk module now lands around 65s, so the
+     * 60s limit reports modules as failed that the backend went on to index
+     * successfully a few seconds later. See cli/reingest_all.php.
+     */
+    private int $timeout = self::TIMEOUT;
+
+    /** Raise the ingest timeout. For bulk/CLI callers only — never the observer. */
+    public function set_timeout(int $seconds): void {
+        $this->timeout = max(1, $seconds);
+    }
+
     // ─────────────────────────────────────────────────────────────
     // Public API
     // ─────────────────────────────────────────────────────────────
@@ -192,7 +210,7 @@ class backend_client {
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_POSTFIELDS     => $body,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => self::TIMEOUT,
+            CURLOPT_TIMEOUT        => $this->timeout,
             CURLOPT_HTTPHEADER     => [
                 'Content-Type: application/json',
                 'Content-Length: ' . strlen($body),
