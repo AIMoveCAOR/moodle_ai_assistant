@@ -26,7 +26,10 @@ import pytest
 from config import glossaries
 from config.crafts import DOMAIN_MAP, resolve_craft_for_course
 from services import translation_service
-from services.course_rag_service import _build_heading_translation_prompt
+from services.course_rag_service import (
+    CourseRAGService,
+    _build_heading_translation_prompt,
+)
 
 
 # ── The prompt fragment ────────────────────────────────────────────────
@@ -116,6 +119,34 @@ def test_database_failure_resolves_to_no_craft():
 def test_absent_silo_service_resolves_to_no_craft():
     """eval/ scripts construct the service with no database at all."""
     assert resolve_craft_for_course("109", None) is None
+
+
+def _service(silo_service):
+    """A CourseRAGService with __init__ bypassed — no embeddings, no Chroma."""
+    svc = CourseRAGService.__new__(CourseRAGService)
+    svc.silo_service = silo_service
+    svc._craft_cache = {}
+    return svc
+
+
+def test_service_supplies_the_glossary_for_a_craft_course():
+    svc = _service(_silo_returning({25: ["101", "109"], 34: []}))
+    assert "calcin" in svc._glossary_for_course("109")
+
+
+def test_service_supplies_nothing_for_a_non_craft_course():
+    """Course 11 is Image Classification. Trade vocabulary there is a defect."""
+    svc = _service(_silo_returning({25: ["101", "109"], 34: []}))
+    assert svc._glossary_for_course("11") == ""
+
+
+def test_service_resolves_each_course_only_once():
+    """A re-ingest walks one course many times; the lookup hits a database."""
+    silo = _silo_returning({25: ["109"], 34: []})
+    svc = _service(silo)
+    for _ in range(5):
+        svc._glossary_for_course("109")
+    assert silo.get_course_ids_by_category.call_count == 1
 
 
 def test_domain_map_is_re_exported_from_rag_service():

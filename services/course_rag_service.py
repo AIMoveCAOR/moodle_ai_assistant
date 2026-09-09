@@ -14,7 +14,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from config.settings import ConfigurationManager
 from config.crafts import resolve_craft_for_course
-from config.glossaries import glossary_prompt_fragment
+from config.glossaries import CRAFT_GLOSSARIES, glossary_prompt_fragment
 from services import translation_service
 
 logger = logging.getLogger(__name__)
@@ -583,7 +583,16 @@ class CourseRAGService:
         """
         key = str(course_id)
         if key not in self._craft_cache:
-            self._craft_cache[key] = resolve_craft_for_course(key, self.silo_service)
+            craft = resolve_craft_for_course(key, self.silo_service)
+            self._craft_cache[key] = craft
+            # Logged once per course (the cache sees to that), because a
+            # glossary that silently fails to load looks exactly like one
+            # that loaded and did not help.
+            if craft:
+                n = len(CRAFT_GLOSSARIES.get(craft) or {})
+                logger.info(f"Course {key}: craft '{craft}', {n} glossary terms")
+            else:
+                logger.info(f"Course {key}: no craft — translating without a glossary")
         return glossary_prompt_fragment(self._craft_cache[key])
 
     def _translate_heading_path(

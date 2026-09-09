@@ -81,7 +81,39 @@ Then verify two things before committing to a full run:
    measured against a live LLM (see `changes/02-ingestion-chunking.md`), so this
    is the first real evidence either way.
 
+3. **Check the glossary loaded.** The log names the craft it resolved, once per
+   course:
+
+   ```bash
+   grep "glossary terms" /tmp/craftpilot_backend.log | tail
+   # Course 109: craft 'glassblowing', 17 glossary terms
+   ```
+
+   `no craft — translating without a glossary` is the correct line for the ~97%
+   of courses that are the AI/robotics programme. Seeing it for course 109 means
+   the silo service was not wired in and the trade vocabulary is not being
+   applied — check `pipeline.py`'s injection before running the full corpus.
+
 If the pilot looks wrong, restore the backup from step 1 and stop.
+
+## Maintaining the trade vocabulary
+
+`config/glossaries.py` holds one French term list per craft, keyed by the
+`craft` values in `config/crafts.py`. Each entry is a term plus a short French
+gloss saying what it means — the gloss is what lets the model recognise the
+concept, so an entry without one is much weaker.
+
+To add a craft: add its key here and to `DOMAIN_MAP`. An empty dict is valid
+and means "translate as before", so the key can land before the vocabulary
+does. `tests/test_craft_glossary.py` fails if a craft in `DOMAIN_MAP` has no
+glossary key at all.
+
+Terms are grouped by provenance — attested in human-authored French, or
+proposed as a correction to a defect found in machine output. Corrections are
+the ones to check with someone who works the trade.
+
+Changing a term only affects chunks ingested afterwards, because translation
+happens at ingest time. Re-ingest the affected course to apply it.
 
 ## 5. Full run
 
