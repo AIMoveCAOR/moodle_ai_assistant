@@ -53,35 +53,42 @@ CRAFT_GLOSSARIES: Dict[str, Dict[str, str]] = {
         # Found as `fuso` (x5) and `souffle-canneau` (x2), neither of which is
         # French. The Greek source calls it "the metal tube through which the
         # artisan blows air", which is a canne.
-        "canne": "tube métallique creux par lequel le verrier souffle le verre",
+        "la canne": "tube métallique creux par lequel le verrier souffle le verre",
         # Found as `l'anneau de recuisson` (x3). An anneau is a ring; the
         # course text itself describes "un four à programme de température".
-        "arche de recuisson": "four à température programmée où la pièce terminée refroidit lentement",
+        "l'arche de recuisson (f.)": "four à température programmée où la pièce terminée refroidit lentement",
         # Found as `cullet` (x4), the English word, left untranslated.
-        "calcin": "fragments de verre déjà fabriqué réintroduits dans le mélange",
+        "le calcin": "fragments de verre déjà fabriqué réintroduits dans le mélange",
         # Found as `glace incandescente` and `éclats de glace froide`. In
         # French glace is ice, or mirror glass — never the hot working
         # material. This entry exists to hold the ordinary word in place.
-        "verre": "le matériau travaillé, à chaud comme à froid",
+        "le verre": "le matériau travaillé, à chaud comme à froid",
         #
         # ── ATTESTED — human-authored French, course 101 (CERFAV) ──
-        "recuisson": "refroidissement lent et contrôlé qui supprime les tensions du verre",
-        "chalumeau": "brûleur orientable utilisé pour le travail du verre à la flamme",
-        "verrier": "l'artisan qui travaille le verre",
-        "verrerie": "l'atelier où le verre est travaillé, et sa production",
-        "soufflage": "mise en forme du verre par insufflation d'air",
-        "insufflation": "action d'envoyer l'air dans la masse de verre",
-        "étirage": "allongement du verre ramolli pour en réduire la section",
-        "ramollissement": "passage du verre à l'état plastique sous l'effet de la chaleur",
-        "coefficient de dilatation": "grandeur qui doit concorder entre deux verres assemblés",
-        "gabarit": "forme de référence servant à contrôler une pièce",
-        "viscosité": "résistance du verre à l'écoulement, qui varie avec la température",
+        "la recuisson": "refroidissement lent et contrôlé qui supprime les tensions du verre",
+        "le verrier": "l'artisan qui travaille le verre",
+        "la verrerie": "l'atelier où le verre est travaillé, et sa production",
+        "le soufflage": "mise en forme du verre par insufflation d'air",
+        "l'insufflation (f.)": "action d'envoyer l'air dans la masse de verre",
+        "l'étirage (m.)": "allongement du verre ramolli pour en réduire la section",
+        "le ramollissement": "passage du verre à l'état plastique sous l'effet de la chaleur",
+        "le coefficient de dilatation": "grandeur qui doit concorder entre deux verres assemblés",
+        "le gabarit": "forme de référence servant à contrôler une pièce",
+        "la viscosité": "résistance du verre à l'écoulement, qui varie avec la température",
         #
         # ── ATTESTED — machine output already verified correct in review ──
-        "pontil": "tige métallique qui tient la pièce par son fond une fois détachée de la canne",
-        "cueillage": "prélèvement de verre en fusion dans le four",
-        "biseau": "bord taillé en oblique",
-        "meulage": "usure à la meule pour dresser ou polir un bord",
+        "le pontil": "tige métallique qui tient la pièce par son fond une fois détachée de la canne",
+        "le cueillage": "prélèvement de verre en fusion dans le four",
+        "le biseau": "bord taillé en oblique",
+        "le meulage": "usure à la meule pour dresser ou polir un bord",
+        #
+        # NOT listed, deliberately: `chalumeau`. It is genuine French and
+        # course 101 uses it constantly — but 101 is lampworking, where a
+        # chalumeau is a torch, and this glossary also covers furnace work.
+        # Listing it made the model render "the tip of the blowpipe" as
+        # "la mèche du chalumeau". Two sub-crafts share the name
+        # "glassblowing"; their vocabulary is not interchangeable, and a term
+        # that means different things in each does more harm than good.
     },
     # Category 34 in DOMAIN_MAP. No glovemaking course has been ingested, so
     # there is nothing in the corpus to mine and nothing to check a term
@@ -104,7 +111,11 @@ def glossary_prompt_fragment(craft: Optional[str]) -> str:
 
     lines = "\n".join(f"- {term} : {gloss}" for term, gloss in terms.items())
     return (
-        "Vocabulaire du métier à employer lorsque le contenu évoque ces notions "
-        "(n'introduis pas ces termes ailleurs, et n'ajoute aucune explication) :\n"
+        "Vocabulaire du métier. Lorsque le texte source désigne l'une de ces "
+        "notions, emploie exactement ce terme, en respectant son genre "
+        "grammatical (indiqué par l'article).\n"
+        "N'emploie aucun de ces termes pour désigner autre chose, et n'en "
+        "ajoute aucun que le texte source ne mentionne pas. Cette liste est "
+        "une référence, pas un contenu à traduire ni à expliquer.\n"
         f"{lines}\n\n"
     )

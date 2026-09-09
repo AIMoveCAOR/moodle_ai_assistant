@@ -59,7 +59,7 @@ def _service(collection):
         config_manager=None,
     )
     svc._get_collection = MagicMock(return_value=collection)
-    svc._translate_chunks_if_needed = lambda chunks, cfg, glossary="": chunks
+    svc._translate_chunks_if_needed = lambda chunks, cfg, glossary="", stats=None: chunks
     return svc
 
 

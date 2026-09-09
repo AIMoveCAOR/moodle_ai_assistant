@@ -505,8 +505,10 @@ class CourseRAGService:
             return 0
 
         rag_config = self.config_manager.get_config().rag if self.config_manager else None
+        translation: Dict[str, Any] = {}
         chunks = self._translate_chunks_if_needed(
-            chunks, rag_config, glossary=self._glossary_for_course(course_id)
+            chunks, rag_config, glossary=self._glossary_for_course(course_id),
+            stats=translation,
         )
 
         collection = self._get_collection(course_id)
@@ -524,6 +526,26 @@ class CourseRAGService:
         # above it, so a slow module does not hold anyone else up.
         with self._write_lock:
             stale_ids = list(collection.get(where={"module_id": module_id}).get("ids") or [])
+
+            # A partly untranslated module may be indexed, but must never
+            # replace one that is already fully translated. On 2026-09-09 the
+            # /chat endpoint started returning 404 mid-run while /embeddings
+            # kept working, so every module indexed "successfully" and the CLI
+            # reported errors=0 — with 37 of course 109's 53 chunks written
+            # back in Greek over the French that was there.
+            #
+            # Where there is nothing to lose the fallback still wins: an
+            # untranslated chunk beats an absent one, and the embedding model
+            # is multilingual. It is only the overwrite that destroys value.
+            if stale_ids and translation.get("failed"):
+                raise RuntimeError(
+                    f"Module {module_id}: {translation['failed']}/"
+                    f"{translation['total']} chunks failed to translate from "
+                    f"'{translation.get('source_language')}' — kept the "
+                    f"previous {len(stale_ids)} chunks rather than replacing "
+                    f"them with a partly untranslated revision"
+                )
+
             added_ids: List[str] = []
             try:
                 for i in range(0, len(chunks), INGEST_BATCH_SIZE):
@@ -645,7 +667,8 @@ class CourseRAGService:
         return " > ".join(s for s in segments if s)
 
     def _translate_chunks_if_needed(
-        self, chunks: List[Document], rag_config: Optional[Any], glossary: str = ""
+        self, chunks: List[Document], rag_config: Optional[Any], glossary: str = "",
+        stats: Optional[Dict[str, Any]] = None,
     ) -> List[Document]:
         """Translate every chunk of a non-French module to French.
 
@@ -678,6 +701,7 @@ class CourseRAGService:
             return chunks
 
         out: List[Document] = []
+        failed = 0
         heading_cache: Dict[str, str] = {}   # one per module — see _translate_heading_path
         for chunk in chunks:
             if translation_service.is_degenerate_text(chunk.page_content):
@@ -706,7 +730,18 @@ class CourseRAGService:
                 # Body translation failed — keep the whole chunk in its
                 # original language rather than emitting a French breadcrumb
                 # glued onto untranslated body text.
+                failed += 1
                 out.append(Document(page_content=chunk.page_content, metadata=new_meta))
+
+        if failed:
+            logger.warning(
+                f"{failed}/{len(chunks)} chunks failed to translate from "
+                f"'{source_lang}' — this module is partly untranslated"
+            )
+        if stats is not None:
+            stats["failed"] = failed
+            stats["total"] = len(chunks)
+            stats["source_language"] = source_lang
         return out
 
     def _reattach_breadcrumb(

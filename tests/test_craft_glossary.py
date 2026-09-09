@@ -72,9 +72,41 @@ def test_fragment_names_every_term_and_its_meaning():
 
 def test_glassblowing_carries_the_terms_the_corpus_got_wrong():
     """Regression cover for the specific defects mined from the corpus."""
-    terms = glossaries.CRAFT_GLOSSARIES["glassblowing"]
+    keys = " ".join(glossaries.CRAFT_GLOSSARIES["glassblowing"])
     for term in ("calcin", "canne", "arche de recuisson", "verre"):
-        assert term in terms, f"{term} missing — a known mistranslation is uncovered"
+        assert term in keys, f"{term} missing — a known mistranslation is uncovered"
+
+
+def test_every_term_declares_its_gender():
+    """Bare nouns made the model guess the gender, and it guessed wrong.
+
+    The first pilot came back with "Le canne", "du canne" and "Les longs
+    cannes" — canne is feminine. The article is what carries that, so every
+    entry has to lead with one (or say so explicitly, for elided forms where
+    l' hides the gender).
+    """
+    for craft, terms in glossaries.CRAFT_GLOSSARIES.items():
+        for term in terms:
+            assert term.startswith(("le ", "la ", "les ", "l'")), (
+                f"{craft}: '{term}' has no article, so its gender is a guess"
+            )
+            if term.startswith("l'"):
+                assert term.endswith(("(m.)", "(f.)")), (
+                    f"{craft}: '{term}' elides its article, so it must state "
+                    f"its gender explicitly"
+                )
+
+
+def test_chalumeau_is_not_in_the_glassblowing_glossary():
+    """A term that means different things in two sub-crafts must not be listed.
+
+    Course 101 (lampworking) uses `chalumeau` for a torch; course 109 is
+    furnace work. Listing it turned "the tip of the blowpipe" into "la mèche
+    du chalumeau". Both are called glassblowing; their vocabulary is not
+    interchangeable.
+    """
+    keys = " ".join(glossaries.CRAFT_GLOSSARIES["glassblowing"])
+    assert "chalumeau" not in keys
 
 
 def test_every_craft_in_domain_map_has_a_glossary_key():
