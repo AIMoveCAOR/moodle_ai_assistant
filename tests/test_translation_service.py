@@ -130,9 +130,17 @@ def test_translate_to_french_gives_up_after_max_retries_on_persistent_rate_limit
     assert llm.invoke.call_count == 4  # initial attempt + 3 retries
 
 
-def test_translate_to_french_does_not_retry_non_rate_limit_errors_even_with_retries_allowed():
+def test_translate_to_french_does_not_retry_client_errors_even_with_retries_allowed():
+    """A rejected request cannot be fixed by sending it again.
+
+    This used to assert that *everything* except a 429 failed immediately.
+    That cost 37 of course 109's 53 chunks on 2026-09-09, when the endpoint
+    returned bursts of "404 page not found" that cleared on their own — see
+    tests/test_translation_retries.py. Transient upstream failures now retry;
+    a bad key or a malformed request still does not.
+    """
     llm = MagicMock()
-    llm.invoke.side_effect = Exception("API timeout")
+    llm.invoke.side_effect = Exception("Error code: 401 - invalid api key")
 
     with patch("services.translation_service.time.sleep") as mock_sleep:
         result = translation_service.translate_to_french("some prompt", llm, max_retries=3)

@@ -135,8 +135,18 @@ def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> O
     shouldn't add retry latency to a live request. Bulk/sequential callers
     (course chunk translation, the backfill script) pass a higher value,
     since firing many calls back-to-back is exactly what triggers Infomaniak's
-    rate limit — a rate-limited call retries with exponential backoff
-    (5s, 10s, 20s, ...); any other error fails immediately, same as before.
+    rate limit. A retryable failure backs off exponentially (5s, 10s, 20s...);
+    anything else fails immediately.
+
+    What counts as retryable is deliberately broader than 429. On 2026-09-09
+    the endpoint returned "404 page not found" in bursts: the first module of
+    each run translated fine and the rest failed instantly, then the next run
+    succeeded again from a cold start. A 404 that comes and goes like that is
+    the provider shedding load, not a URL that stopped existing — and with no
+    retry it cost 37 of course 109's 53 chunks in one run.
+
+    Client errors stay non-retryable. A 401 or a 400 means the request itself
+    is wrong, and repeating it just turns a fast failure into a slow one.
     """
     delay = 5.0
     attempt = 0
@@ -146,12 +156,24 @@ def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> O
             text = extract_text(response)
             return text or None
         except Exception as e:
-            is_rate_limited = "429" in str(e) or "rate_limit" in str(e).lower()
-            if is_rate_limited and attempt < max_retries:
+            message = str(e)
+            lowered = message.lower()
+            retryable = (
+                "429" in message
+                or "rate_limit" in lowered
+                # Transient upstream failures. Both have hit this deployment:
+                # 500s from /embeddings on 2026-09-07, 404s from /chat on
+                # 2026-09-09, each in bursts that cleared on their own.
+                or "404" in message
+                or any(f" {code}" in f" {message}" for code in ("500", "502", "503", "504"))
+                or "timeout" in lowered
+                or "timed out" in lowered
+            )
+            if retryable and attempt < max_retries:
                 attempt += 1
                 logger.warning(
-                    f"translate_to_french: rate limited, retrying in {delay:.0f}s "
-                    f"(attempt {attempt}/{max_retries})"
+                    f"translate_to_french: retryable failure ({message[:80]}), "
+                    f"retrying in {delay:.0f}s (attempt {attempt}/{max_retries})"
                 )
                 time.sleep(delay)
                 delay *= 2
