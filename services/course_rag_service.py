@@ -13,6 +13,8 @@ from langchain_core.documents.base import Document
 from langchain_openai import OpenAIEmbeddings
 
 from config.settings import ConfigurationManager
+from config.crafts import resolve_craft_for_course
+from config.glossaries import glossary_prompt_fragment
 from services import translation_service
 
 logger = logging.getLogger(__name__)
@@ -63,7 +65,7 @@ def _breadcrumb(heading_stack: List[Tuple[int, str]]) -> str:
 
 
 def _build_heading_translation_prompt(
-    heading: str, source_lang: str, context: str = ""
+    heading: str, source_lang: str, context: str = "", glossary: str = ""
 ) -> str:
     """Translation prompt for a bare section title (breadcrumb segment).
 
@@ -81,6 +83,10 @@ def _build_heading_translation_prompt(
     passed in for vocabulary only, explicitly demoted to a glossary: the
     failure this prompt originally guarded against was the model rewriting the
     title *from* the body, so the excerpt must never read as content.
+
+    The glossary is the same one the body translation receives, which is the
+    point: a heading and the chunks beneath it must name a tool identically or
+    the breadcrumb stops matching its own content.
     """
     context = (context or "").strip()
     if context:
@@ -95,6 +101,7 @@ def _build_heading_translation_prompt(
             "translittération d'un terme technique.\n"
             "Réponds avec UNIQUEMENT le titre traduit : pas de guillemets, pas "
             "d'explication, pas de reformulation, pas de phrase complète.\n\n"
+            f"{glossary}"
             f"Extrait de la section (vocabulaire seulement) :\n{context[:600]}\n\n"
             f"Titre original ({source_lang}) :\n{heading}"
         )
@@ -105,6 +112,7 @@ def _build_heading_translation_prompt(
         "translittération d'un terme technique.\n"
         "Réponds avec UNIQUEMENT le titre traduit : pas de guillemets, pas "
         "d'explication, pas de reformulation, pas de phrase complète.\n\n"
+        f"{glossary}"
         f"Titre original ({source_lang}) :\n{heading}"
     )
 
@@ -389,13 +397,21 @@ class CourseRAGService:
         embeddings: OpenAIEmbeddings,
         persist_directory: str,
         config_manager: Optional[ConfigurationManager] = None,
+        silo_service: Optional[Any] = None,
     ) -> None:
         self.embeddings = embeddings
         self.persist_directory = persist_directory
         self.config_manager = config_manager
+        # Optional: only used to resolve a course's craft for the translation
+        # glossary. eval/ scripts construct this service with no database at
+        # all, and must keep working — see _glossary_for_course.
+        self.silo_service = silo_service
         self.chunker = SemanticChunker()
         # Cache open Chroma collection handles keyed by course_id string
         self._collections: Dict[str, Chroma] = {}
+        # course_id -> craft (or None). A re-ingest touches one course many
+        # times over, and the answer cannot change mid-run.
+        self._craft_cache: Dict[str, Optional[str]] = {}
         # Serializes Chroma writes now that the ingest/delete endpoints run in
         # a thread pool rather than on the event loop (see api/routes.py).
         self._write_lock = threading.Lock()
@@ -489,7 +505,9 @@ class CourseRAGService:
             return 0
 
         rag_config = self.config_manager.get_config().rag if self.config_manager else None
-        chunks = self._translate_chunks_if_needed(chunks, rag_config)
+        chunks = self._translate_chunks_if_needed(
+            chunks, rag_config, glossary=self._glossary_for_course(course_id)
+        )
 
         collection = self._get_collection(course_id)
 
@@ -555,6 +573,19 @@ class CourseRAGService:
             return heading_path, text[len(prefix):]
         return "", text
 
+    def _glossary_for_course(self, course_id: str) -> str:
+        """Return the craft glossary for a course, or "" if it has none.
+
+        "" is the usual answer and not a failure: most courses in this Moodle
+        are the AI/robotics programme, which has no trade vocabulary. Feeding
+        them glassblowing terms would be a new defect, so the glossary applies
+        only where a craft resolves positively.
+        """
+        key = str(course_id)
+        if key not in self._craft_cache:
+            self._craft_cache[key] = resolve_craft_for_course(key, self.silo_service)
+        return glossary_prompt_fragment(self._craft_cache[key])
+
     def _translate_heading_path(
         self,
         heading_path: str,
@@ -563,6 +594,7 @@ class CourseRAGService:
         max_retries: int = 2,
         throttle_seconds: float = 0.0,
         context: str = "",
+        glossary: str = "",
     ) -> str:
         """Translate a breadcrumb, one LLM call per *distinct* heading segment.
 
@@ -591,7 +623,9 @@ class CourseRAGService:
                     cache[segment] = segment
                 else:
                     translated = translation_service.translate_to_french(
-                        _build_heading_translation_prompt(segment, source_lang, context),
+                        _build_heading_translation_prompt(
+                            segment, source_lang, context, glossary=glossary
+                        ),
                         self._translation_llm,
                         max_retries=max_retries,
                     )
@@ -602,7 +636,7 @@ class CourseRAGService:
         return " > ".join(s for s in segments if s)
 
     def _translate_chunks_if_needed(
-        self, chunks: List[Document], rag_config: Optional[Any]
+        self, chunks: List[Document], rag_config: Optional[Any], glossary: str = ""
     ) -> List[Document]:
         """Translate every chunk of a non-French module to French.
 
@@ -645,7 +679,9 @@ class CourseRAGService:
             breadcrumb, body = self._split_breadcrumb(
                 chunk.page_content, chunk.metadata.get("heading_path", "") or ""
             )
-            prompt = translation_service.build_chunk_translation_prompt(body, source_lang)
+            prompt = translation_service.build_chunk_translation_prompt(
+                body, source_lang, glossary=glossary
+            )
             translated = translation_service.translate_to_french(prompt, self._translation_llm, max_retries=2)
             new_meta = {**chunk.metadata, "source_language": source_lang}
             if translated:
@@ -653,6 +689,7 @@ class CourseRAGService:
                 out.append(Document(
                     page_content=self._reattach_breadcrumb(
                         breadcrumb, translated, source_lang, heading_cache, max_retries=2,
+                        glossary=glossary,
                     ),
                     metadata=new_meta,
                 ))
@@ -671,6 +708,7 @@ class CourseRAGService:
         cache: Dict[str, str],
         max_retries: int = 2,
         throttle_seconds: float = 0.0,
+        glossary: str = "",
     ) -> str:
         """Prepend the translated breadcrumb to a translated body.
 
@@ -740,6 +778,7 @@ class CourseRAGService:
         # One breadcrumb cache for the whole run, so every chunk in the
         # collection agrees on the French form of a given heading.
         heading_cache: Dict[str, str] = {}
+        glossary = self._glossary_for_course(course_id)
 
         for idx, (doc_id, text, meta) in enumerate(zip(ids, documents, metadatas), start=1):
             if meta.get("source_language"):
@@ -759,7 +798,9 @@ class CourseRAGService:
                     breadcrumb, body = self._split_breadcrumb(
                         text or "", meta.get("heading_path", "") or ""
                     )
-                    prompt = translation_service.build_chunk_translation_prompt(body, source_lang)
+                    prompt = translation_service.build_chunk_translation_prompt(
+                        body, source_lang, glossary=glossary
+                    )
                     translated = translation_service.translate_to_french(
                         prompt, self._translation_llm, max_retries=5
                     )
@@ -774,6 +815,7 @@ class CourseRAGService:
                             page_content=self._reattach_breadcrumb(
                                 breadcrumb, translated, source_lang, heading_cache,
                                 max_retries=5, throttle_seconds=throttle_seconds,
+                                glossary=glossary,
                             ),
                             metadata=new_meta,
                         ))

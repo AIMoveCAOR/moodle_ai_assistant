@@ -168,6 +168,12 @@ def test_ingest_module_calls_translate_chunks_before_embedding():
         section_name="Intro", content_html="<p>Wear goggles at all times</p>",
     )
 
-    svc._translate_chunks_if_needed.assert_called_once_with(canned_chunks, svc.config_manager.get_config().rag if svc.config_manager else None)
+    # glossary="" because this service has no silo_service, so no craft
+    # resolves and the module translates exactly as it did before glossaries.
+    svc._translate_chunks_if_needed.assert_called_once_with(
+        canned_chunks,
+        svc.config_manager.get_config().rag if svc.config_manager else None,
+        glossary="",
+    )
     mock_collection.add_documents.assert_called_once_with(translated_chunks)
     assert count == 1

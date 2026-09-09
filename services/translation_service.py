@@ -160,29 +160,48 @@ def translate_to_french(prompt: str, llm: ChatOpenAI, max_retries: int = 0) -> O
             return None
 
 
-def build_query_translation_prompt(original_query: str, source_lang: str) -> str:
-    """Byte-identical to the original detect_and_translate_query prompt."""
+def build_query_translation_prompt(
+    original_query: str, source_lang: str, glossary: str = ""
+) -> str:
+    """Translation prompt for a learner's question.
+
+    Byte-identical to the original detect_and_translate_query prompt when no
+    glossary applies, which is the common case.
+
+    Retrieval compares French to French: the query is translated, then
+    embedded against a French corpus. So the two sides have to agree on their
+    words. If the chunks say `arche de recuisson` and the question becomes
+    `anneau de recuisson`, the match degrades for no reason other than
+    vocabulary drift between two prompts. Passing the same glossary to both
+    keeps them speaking the same language.
+    """
     return (
         "Traduis la question suivante en français, en conservant tout son sens "
         "technique et son intention.\n\n"
+        f"{glossary}"
         f'Question originale ({source_lang}) :\n"{original_query}"\n\n'
         "Réponds avec UNIQUEMENT la traduction française, sans explication."
     )
 
 
-def build_transcript_translation_prompt(transcription: str, source_lang: str) -> str:
+def build_transcript_translation_prompt(
+    transcription: str, source_lang: str, glossary: str = ""
+) -> str:
     """Translation prompt for a spoken, first-person craft-elicitation transcript."""
     return (
         "Traduis la transcription suivante en français, en conservant tout son sens "
         "technique, son registre oral et son intention. Il s'agit de la transcription "
         "d'un artisan expliquant son geste métier à voix haute — conserve le ton "
         "parlé, à la première personne.\n\n"
+        f"{glossary}"
         f'Transcription originale ({source_lang}) :\n"{transcription}"\n\n'
         "Réponds avec UNIQUEMENT la traduction française, sans explication."
     )
 
 
-def build_chunk_translation_prompt(chunk_text: str, source_lang: str) -> str:
+def build_chunk_translation_prompt(
+    chunk_text: str, source_lang: str, glossary: str = ""
+) -> str:
     """Translation prompt for a course-content chunk.
 
     `chunk_text` may already include a heading breadcrumb baked in by
@@ -196,6 +215,12 @@ def build_chunk_translation_prompt(chunk_text: str, source_lang: str) -> str:
     the French term a learner would search for, and the breadcrumb translator
     takes this text as its glossary, so one English word in a body propagates
     into every heading under it.
+
+    `glossary` is the craft's term list (see config/glossaries.py), empty for
+    the ~97% of the corpus that belongs to no craft. Forbidding English was
+    not enough on its own: the model went on to pick French words the trade
+    does not use — `l'anneau de recuisson` for an annealing oven, `glace` for
+    the glass itself. Naming the right term is what a prohibition cannot do.
     """
     return (
         "Traduis le contenu pédagogique suivant en français, en conservant tout son "
@@ -204,6 +229,7 @@ def build_chunk_translation_prompt(chunk_text: str, source_lang: str) -> str:
         "Emploie systématiquement le terme français du métier : n'introduis aucun mot "
         "anglais et ne translittère pas un terme technique. Ne conserve un mot d'origine "
         "étrangère que s'il est lui-même le terme consacré en français dans ce métier.\n\n"
+        f"{glossary}"
         f'Contenu original ({source_lang}) :\n"{chunk_text}"\n\n'
         "Réponds avec UNIQUEMENT la traduction française, sans explication."
     )

@@ -19,6 +19,8 @@ from langchain import hub
 from sentence_transformers import CrossEncoder
 
 from config.settings import ConfigurationManager
+from config.crafts import DOMAIN_MAP  # noqa: F401  — re-exported, see below
+from config.glossaries import glossary_prompt_fragment
 from services.reranker_service import InfomaniakReranker
 from services import translation_service
 from core.types import ConversationState
@@ -113,17 +115,11 @@ def build_cohort_filter(user_cohort_ids: list, craft: Optional[str] = None) -> d
     return base
 
 
-# Maps a domain-focus button's label (sent by the frontend as `selected_domain`,
-# see plugin/templates/chat_interface.mustache) to the two identifiers needed to
-# narrow retrieval: the Moodle course category (for course_content) and the
-# annotation `craft` tag (for video_annotation). A domain is only added here
-# once its category/craft actually exist and hold content — never the other
-# way around, so a stale/unmapped label just falls through to unfiltered
-# retrieval (see retrieve_initial/retrieve_final_dual) instead of dead-ending.
-DOMAIN_MAP: Dict[str, Dict[str, Any]] = {
-    "Soufflerie de verre": {"category_id": 25, "craft": "glassblowing"},
-    "Ganterie": {"category_id": 34, "craft": "glovemaking"},
-}
+# DOMAIN_MAP now lives in config/crafts.py and is imported above, so the
+# ingest path can resolve a course's craft without importing this module and
+# dragging the whole retrieval stack into ingestion. It is re-exported here
+# because `from services.rag_service import DOMAIN_MAP` is used in several
+# places (pipeline.py among them) and there is no reason to churn them.
 
 
 # ── Deterministic user-facing messages, keyed by ISO 639-1 language code ────
@@ -1674,7 +1670,13 @@ Génère une explication détaillée à la première personne de la technique co
         if not should_translate:
             return {"query_language": "fr", "search_query": original_query}
 
-        prompt = translation_service.build_query_translation_prompt(original_query, lang)
+        # Same craft lookup as retrieve_final_dual uses (see below); it is a
+        # dict access on a value the frontend already sent, so it costs no
+        # database round trip on the latency-sensitive query path.
+        craft = DOMAIN_MAP.get(state.get("selected_domain"), {}).get("craft")
+        prompt = translation_service.build_query_translation_prompt(
+            original_query, lang, glossary=glossary_prompt_fragment(craft)
+        )
         translated = translation_service.translate_to_french(prompt, self.llm)
         if translated:
             logger.info(f"detect_and_translate_query: [{lang}] '{original_query}' -> '{translated}'")

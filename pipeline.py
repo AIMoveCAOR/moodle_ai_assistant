@@ -128,6 +128,12 @@ class MoodleAIAssistantPipeline:
         self.document_service = DocumentProcessingService(self.config_manager)
         self.graph_service = ConversationGraphService(self.rag_service)
         self.silo_service = SiloService()
+        # Inject the silo service into course_rag_service so ingestion can
+        # resolve a course's craft and pick the right trade glossary (see
+        # config/glossaries.py). Injected here rather than passed to the
+        # constructor above only because SiloService is built after it; same
+        # after-the-fact wiring as the course_rag_service injection above.
+        self.course_rag_service.silo_service = self.silo_service
 
         # Auto-load documents from Documents folder if it exists
         self._auto_load_documents()
