@@ -149,6 +149,34 @@ def test_service_resolves_each_course_only_once():
     assert silo.get_course_ids_by_category.call_count == 1
 
 
+def test_the_glossary_reaches_the_heading_translator():
+    """The breadcrumb must be translated with the same vocabulary as the body.
+
+    Regression test. `_reattach_breadcrumb` took a `glossary` argument and
+    never forwarded it, so headings were translated with no trade vocabulary
+    while the bodies beneath them had it. Course 109 came back with
+    "L'anneau de recuisson" as the breadcrumb directly above a body reading
+    "L'arche de recuisson est un four" — one oven, two names, in one chunk.
+
+    Nothing caught it: the prompt builder was tested directly with a glossary
+    handed to it, which proves the destination works but not that anything
+    arrives. A defaulted keyword argument that is dropped raises nothing.
+    """
+    svc = CourseRAGService.__new__(CourseRAGService)
+    seen = {}
+
+    def fake_translate_heading_path(heading_path, source_lang, cache, **kwargs):
+        seen.update(kwargs)
+        return "TRADUIT"
+
+    svc._translate_heading_path = fake_translate_heading_path
+    svc._reattach_breadcrumb(
+        "Ανόπτηση", "corps traduit", "el", {}, glossary="GLOSSAIRE-ICI"
+    )
+
+    assert seen.get("glossary") == "GLOSSAIRE-ICI"
+
+
 def test_domain_map_is_re_exported_from_rag_service():
     """Moving DOMAIN_MAP must not silently fork it into two maps."""
     from services.rag_service import DOMAIN_MAP as re_exported

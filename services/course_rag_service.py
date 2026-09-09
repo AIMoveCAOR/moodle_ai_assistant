@@ -733,7 +733,7 @@ class CourseRAGService:
         fr_breadcrumb = self._translate_heading_path(
             breadcrumb, source_lang, cache,
             max_retries=max_retries, throttle_seconds=throttle_seconds,
-            context=translated_body,
+            context=translated_body, glossary=glossary,
         )
         if not fr_breadcrumb:
             return translated_body
