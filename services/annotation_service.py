@@ -22,6 +22,7 @@ import pymysql.cursors
 from langchain_core.documents.base import Document
 
 from config.settings import ConfigurationManager
+from config.glossaries import glossary_prompt_fragment
 from services import translation_service
 
 
@@ -220,7 +221,14 @@ class AnnotationService:
                     rag_config.langid_confidence_threshold, rag_config.min_langid_chars,
                 )
             if should_translate:
-                prompt = translation_service.build_transcript_translation_prompt(page_content, lang)
+                # An annotation already records its craft, so the glossary
+                # needs no lookup here. Worth applying: a video annotation and
+                # the course text describing the same tool are retrieved
+                # together, and they should call it the same thing.
+                prompt = translation_service.build_transcript_translation_prompt(
+                    page_content, lang,
+                    glossary=glossary_prompt_fragment(annotation.get("craft")),
+                )
                 translated = translation_service.translate_to_french(prompt, self._translation_llm)
                 source_language = lang
                 if translated:

@@ -223,6 +223,10 @@ cli_writeln('');
 // ── Process ───────────────────────────────────────────────────────────────────
 $extractor = new \local_craftpilot\course_content_extractor();
 $client     = new \local_craftpilot\backend_client();
+// Nobody is waiting on this script, so give a module time to finish rather
+// than reporting a failure the backend is about to complete anyway. The
+// observer keeps the shorter default — see backend_client::set_timeout.
+$client->set_timeout(300);
 
 $done = $skipped = $errors = 0;
 $i     = 0;

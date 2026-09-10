@@ -168,6 +168,15 @@ def test_ingest_module_calls_translate_chunks_before_embedding():
         section_name="Intro", content_html="<p>Wear goggles at all times</p>",
     )
 
-    svc._translate_chunks_if_needed.assert_called_once_with(canned_chunks, svc.config_manager.get_config().rag if svc.config_manager else None)
+    # glossary="" because this service has no silo_service, so no craft
+    # resolves and the module translates exactly as it did before glossaries.
+    # `stats` is the dict ingest_module passes in to learn how many chunks
+    # failed to translate, so it is matched by type rather than by value.
+    svc._translate_chunks_if_needed.assert_called_once()
+    args, kwargs = svc._translate_chunks_if_needed.call_args
+    assert args[0] == canned_chunks
+    assert args[1] == (svc.config_manager.get_config().rag if svc.config_manager else None)
+    assert kwargs["glossary"] == ""
+    assert isinstance(kwargs["stats"], dict)
     mock_collection.add_documents.assert_called_once_with(translated_chunks)
     assert count == 1

@@ -86,7 +86,13 @@ def _service():
         embeddings=MagicMock(), persist_directory="/tmp/test_chroma", config_manager=None
     )
     svc._langid = MagicMock()
-    svc._langid.classify.return_value = ("el", 0.99)
+    # English, not Greek. These tests are about breadcrumb translation
+    # mechanics — caching, and not gluing the breadcrumb onto the body — and
+    # any non-French source language used to demonstrate them. Since the
+    # project went French-only, English is the only one translate_to_french
+    # still acts on (translation_service.TRANSLATABLE_SOURCE_LANGUAGES), so
+    # Greek here would silently turn these into tests of the skip path.
+    svc._langid.classify.return_value = ("en", 0.99)
     return svc
 
 
