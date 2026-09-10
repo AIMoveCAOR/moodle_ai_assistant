@@ -34,6 +34,14 @@ trust them:
               proposed replacement. Each one names the defect it fixes. These
               are the entries a glassblower should check first.
 
+Dormant since 2026-09-10
+------------------------
+The project went French-only, so ingest no longer translates French content
+and this table is almost never consulted — see ``docs/SCOPE_french_only.md``,
+including a known defect where this glossary contaminates short headings.
+Kept rather than deleted because the terms were gathered from a real corpus
+and would be expensive to reconstruct.
+
 Adding a craft
 --------------
 Add a key here matching the ``craft`` value in ``config.crafts.DOMAIN_MAP``.

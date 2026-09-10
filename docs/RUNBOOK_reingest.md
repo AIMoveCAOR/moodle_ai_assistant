@@ -1,5 +1,13 @@
 # Runbook — re-ingesting the course corpus
 
+> ## ⚠ SUSPENDED — do not run step 5
+>
+> **2026-09-10:** the project is French-only, so re-translating the corpus has
+> no purpose. See [SCOPE_french_only.md](SCOPE_french_only.md) before acting on
+> anything below. Steps 1–4 (backup, dry run, single-course pilot) are still
+> accurate and still safe if you need them for something else; step 5 is the
+> ~10-hour re-translation run and should not be started.
+
 Follow these in order. Steps 1–4 are safe and reversible. Step 5 is the long one.
 
 **Why this is needed:** the heading-hierarchy and breadcrumb-translation fixes

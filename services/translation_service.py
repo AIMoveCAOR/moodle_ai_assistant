@@ -44,6 +44,33 @@ def load_langid():
         return None
 
 
+# Languages this corpus is actually written in, and that py3langid identifies
+# reliably. Anything else it reports is treated as a misdetection.
+#
+# This is an allowlist, not a denylist, and the difference is the whole point.
+# The guard used to be "translate unless confidence is low", which assumes a
+# wrong answer arrives hesitantly. It does not. py3langid reads this paragraph
+# of course 101 — human-written French, a table of expansion coefficients —
+#
+#   "LES 4 FAMILLES DE VERRE ESSENTIELLES > PROPRIÉTÉS PHYSIQUES ..."
+#
+# as Latin with confidence 1.0000, and French at 0.0000. Every threshold in
+# the world lets that through, and the result is French content round-tripped
+# through an LLM for no reason: 1 chunk in 179 of the only human-authored
+# French course in the corpus. It survived intact because it is mostly digits.
+# The next one might not.
+#
+# So the question changed from "how sure are we it is foreign?" to "is it a
+# language we expect at all?". Being wrong now means leaving text alone, which
+# is safe by construction — the text is already in the language it is in.
+#
+# Only English is listed. It is the one non-French language present in bulk
+# (~8,000 chunks of AI/robotics coursework) and the one py3langid is dependable
+# on. The project is French-only going forward, so nothing else needs to be
+# here; add a code only if real content in that language turns up.
+TRANSLATABLE_SOURCE_LANGUAGES = frozenset({"en"})
+
+
 def decide_translation(
     text: str,
     langid_identifier: Any,
@@ -52,10 +79,12 @@ def decide_translation(
 ) -> Tuple[str, bool]:
     """Decide whether `text` should be translated to French.
 
-    Returns (detected_lang, should_translate). Unavailable identifier,
-    detected French, low confidence, or too-short text all default to
-    ("fr", False) — biased toward never spuriously translating real French
-    content, matching the query-side gating this was extracted from.
+    Returns (detected_lang, should_translate). ("fr", False) — do nothing — is
+    the answer whenever there is any doubt: no identifier, French detected, low
+    confidence, text too short, or a language outside
+    TRANSLATABLE_SOURCE_LANGUAGES. Translating French into French is the one
+    outcome that can damage content that was already correct, so every
+    uncertain case resolves away from the translator.
     """
     if langid_identifier is None:
         return "fr", False
@@ -63,6 +92,9 @@ def decide_translation(
     lang, confidence = langid_identifier.classify(text)
 
     if lang == "fr" or confidence < confidence_threshold or len(text) < min_chars:
+        return "fr", False
+
+    if lang not in TRANSLATABLE_SOURCE_LANGUAGES:
         return "fr", False
 
     return lang, True

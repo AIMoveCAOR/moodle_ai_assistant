@@ -265,3 +265,45 @@ def test_build_chunk_translation_prompt_includes_source_text_and_language():
     assert "Safety > Wear goggles at all times" in prompt
     assert "(en)" in prompt
     assert "UNIQUEMENT la traduction française" in prompt
+
+
+# ── decide_translation: protecting French from the translator ───────────────
+#
+# The project is French-only. The single way this pipeline can damage French
+# content is by deciding that French text is foreign and round-tripping it
+# through the LLM, so that decision is the thing worth testing hardest.
+
+def test_decide_translation_never_translates_real_french_misread_as_latin():
+    """The regression: real French, from course 101, that langid calls Latin.
+
+    Uses the real identifier rather than a mock, because the point is not
+    that the function honours a confidence score — it is that py3langid
+    reports this exact French paragraph as Latin with confidence 1.0000 and
+    French at 0.0000. Every guard decide_translation had (top-1 is French,
+    confidence below threshold, text too short) passes this text straight
+    through to the translator. A mock would have agreed with whatever we
+    believed; this text does not.
+    """
+    french = (
+        "LES 4 FAMILLES DE VERRE ESSENTIELLES > PROPRIÉTÉS PHYSIQUES "
+        "FONDAMENTALES > Dilatation Thermique > Classement par coefficient "
+        "(du plus grand au plus petit) :\n\n"
+        "Cristal : 92-96 × 10⁻⁷/°C Sodo-calcique : 85-90 × 10⁻⁷/°C "
+        "Borosilicate : 32-33 × 10⁻⁷/°C Silice : 5-6 × 10⁻⁷/°C"
+    )
+    identifier = translation_service.load_langid()
+
+    assert identifier.classify(french)[0] == "la", "premise changed: langid no longer misreads this"
+    assert translation_service.decide_translation(french, identifier, 0.5, 12) == ("fr", False)
+
+
+def test_decide_translation_ignores_a_confident_but_unexpected_language():
+    langid = MagicMock()
+    langid.classify.return_value = ("wa", 1.0)  # Walloon: never real here, always a misread
+    assert translation_service.decide_translation("x" * 400, langid, 0.5, 12) == ("fr", False)
+
+
+def test_decide_translation_still_translates_expected_languages():
+    langid = MagicMock()
+    langid.classify.return_value = ("en", 0.95)
+    assert translation_service.decide_translation("How do you blow glass?", langid, 0.5, 12) == ("en", True)
