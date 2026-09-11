@@ -9,6 +9,7 @@ from venv import logger
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from core.chat_ticket import require_ticket_user
 from api.models import (
     ChatRequest,
     SystemStatus,
@@ -98,10 +99,12 @@ async def get_system_status():
 
 
 @router.post("/chat")
-async def chat_stream(request: ChatRequest):
-    """Streaming chat — requires a validated user_id from chat_proxy.php."""
+async def chat_stream(request: ChatRequest, http_request: Request):
+    """Streaming chat. Browsers arrive with a signed ticket from chat_proxy.php
+    (checked in server.py); the body's user_id must then be the ticket's."""
     if not request.user_id or request.user_id <= 0:
         raise HTTPException(status_code=403, detail="user_id required")
+    require_ticket_user(http_request, request.user_id)
 
     return StreamingResponse(
         generate_simplified_stream(
