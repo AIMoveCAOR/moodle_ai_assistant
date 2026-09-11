@@ -64,6 +64,16 @@ class backend_client {
     }
 
     /**
+     * Every video-elicitation annotation with its annotator's name, for the admin viewer.
+     *
+     * @return array{annotations: array, total: int}
+     * @throws \RuntimeException on cURL error or non-2xx HTTP status.
+     */
+    public function get_annotations_dashboard(): array {
+        return $this->request('GET', '/annotations-dashboard', []);
+    }
+
+    /**
      * Run a single chat question against the RAG backend and collect the full response.
      *
      * Posts to /api/chat with CURLOPT_RETURNTRANSFER (non-streaming) and parses the

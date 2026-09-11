@@ -14,6 +14,10 @@
  * directly through Apache's ProxyPass (with flushpackets=on), bypassing
  * PHP-FPM's buffered FastCGI transport entirely.
  *
+ * The redirect carries a short-lived signed ticket (classes/chat_ticket.php).
+ * The browser never holds the internal API token, so the backend accepts its
+ * chat only with that ticket and only for the user_id the ticket names.
+ *
  * @package   local_craftpilot
  * @copyright 2026
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -65,10 +69,21 @@ if ($incoming_user_id !== (int)$USER->id) {
     exit;
 }
 
+// Bind the redirected request to this user. Without the ticket, anyone could
+// post to /craftpilot-api/chat directly with any user_id and read that
+// user's cohort-siloed content.
+$secret = (string) get_config('local_craftpilot', 'internal_api_token');
+if ($secret === '') {
+    http_response_code(503);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'CraftPilot is not configured']);
+    exit;
+}
+$ticket = \local_craftpilot\chat_ticket::issue((int) $USER->id, $secret);
+
 // Session valid. Issue a 307 (method-preserving) redirect so the browser
-// re-POSTs the same body to the Apache proxy endpoint. Apache injects the
-// X-Internal-Token header automatically for /craftpilot-api/ requests, and
-// the ProxyPass uses flushpackets=on so status events reach the browser
-// immediately without FastCGI buffering.
-header('Location: /craftpilot-api/chat', true, 307);
+// re-POSTs the same body to the Apache proxy endpoint, whose ProxyPass uses
+// flushpackets=on so status events reach the browser immediately without
+// FastCGI buffering.
+header('Location: /craftpilot-api/chat?ticket=' . rawurlencode($ticket), true, 307);
 exit;

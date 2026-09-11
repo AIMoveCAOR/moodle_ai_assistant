@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.routes import router
+from core.chat_ticket import internal_token_middleware
 from config.settings import setup_logging
 
 
@@ -61,14 +62,10 @@ _INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
 _PUBLIC_PATHS = {"/", "/api/health", "/api/status"}
 
 
-@app.middleware("http")
-async def require_internal_token(request: Request, call_next):
-    """Reject any request to sensitive endpoints that lacks the shared internal token."""
-    if request.url.path not in _PUBLIC_PATHS:
-        token = request.headers.get("X-Internal-Token", "")
-        if not _INTERNAL_TOKEN or token != _INTERNAL_TOKEN:
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-    return await call_next(request)
+# Every route needs the shared internal token except the public ones and
+# /api/chat, which also accepts a signed ticket from local/craftpilot/chat_proxy.php
+# (browsers never hold the token). See core/chat_ticket.py.
+app.middleware("http")(internal_token_middleware(_INTERNAL_TOKEN, _PUBLIC_PATHS))
 
 # Include API routes
 app.include_router(router, prefix="/api")

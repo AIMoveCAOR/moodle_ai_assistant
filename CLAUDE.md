@@ -509,7 +509,7 @@ The token lives in two places that must stay in sync:
 - **Backend**: `INTERNAL_API_TOKEN` in `/opt/craftpilot_backend/.env`
 - **Moodle**: `local_craftpilot / internal_api_token` in `mdl_config_plugins` (set via Site Administration → Plugins → Local plugins → CraftPilot, or with `set_config('internal_api_token', '...', 'local_craftpilot')`)
 
-The middleware is in `server.py` (`require_internal_token`). PHP callers that send the header:
+The check lives in `core/chat_ticket.py` (`internal_token_middleware`, installed in `server.py`). Browsers never hold the token: `/api/chat` also accepts a short-lived signed **chat ticket** that `plugin/chat_proxy.php` puts in its 307 redirect (`plugin/classes/chat_ticket.php`, same format as `core/chat_ticket.py`), and the route then refuses any body `user_id` other than the ticket's. Apache strips any client-sent `X-Internal-Token` on `/craftpilot-api/` and never adds it (changed 2026-09-11: it used to inject the token into every public request, which let anyone chat as any user and call every endpoint). `/etc/httpd/conf.d/craftpilot-api-lockdown.conf` also denies every `/craftpilot-api/` path except `chat`. PHP callers that send the header:
 - `classes/backend_client.php` — reads via `get_config('local_craftpilot', 'internal_api_token')`
 - `chat_proxy.php` — same
 
@@ -693,10 +693,10 @@ Browser → POST /craftpilot-api/chat   (Apache ProxyPass → uvicorn:8000)
 ```
 
 Key details:
-- Apache's `<Location /craftpilot-api/>` injects `X-Internal-Token` for all requests to that path, including browser-followed redirects.
+- `chat_proxy.php` redirects to `/craftpilot-api/chat?ticket=...`; the ticket (HMAC of user id + expiry with the internal token, 120 s) is what authenticates the browser. Apache's `<Location /craftpilot-api/>` only strips `X-Internal-Token`.
 - `ProxyPass /craftpilot-api/ ... flushpackets=on` forwards each JSON-line chunk to the browser immediately.
 - `Timeout 7200` and `ProxyTimeout 7200` inside the VirtualHost DO apply to HTTP ProxyPass — the 3-minute pipeline is safe.
-- The request body (`sesskey`, `message`, etc.) is preserved verbatim through the 307. The backend ignores `sesskey` (only Apache's `X-Internal-Token` matters for backend auth).
+- The request body (`sesskey`, `message`, etc.) is preserved verbatim through the 307. The backend ignores `sesskey`; it authenticates the request by the ticket and requires `user_id` to match it.
 
 ### Problem: Apertus 70B outputs empty response
 
