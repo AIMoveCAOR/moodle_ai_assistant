@@ -432,6 +432,30 @@ class RAGService:
                 model=self.config.embedding_model,
                 openai_api_key=api_key,
                 openai_api_base=base_url,
+                # Send the text itself, not tiktoken token IDs.
+                #
+                # Left at its default (True), OpenAIEmbeddings re-encodes every
+                # input with tiktoken — an OpenAI tokenizer — and posts arrays of
+                # integer token IDs. OpenAI's endpoint decodes that; Infomaniak's
+                # bge_multilingual_gemma2 does not. It embeds the array as though
+                # the digits were the document and answers HTTP 200 with a
+                # correctly-shaped, plausibly-normed, meaningless vector, so
+                # nothing downstream can tell that retrieval has stopped working.
+                #
+                # It had stopped working: a chunk re-embedded this way scored
+                # cosine 0.094 against its own stored vector, "Les 4 Familles de
+                # Verre" ranked 131st of 179 for a question its text answers
+                # outright, and every course question reached assess_relevance as
+                # syllabus boilerplate and was refused. The rerank scores looked
+                # healthy throughout — the cross-encoder was faithfully ranking
+                # garbage.
+                #
+                # The corpus was ingested by a client that sent text (stored
+                # vectors match the raw API at cosine 0.9999), so the index is
+                # sound and did not need rebuilding. Keep this False so queries
+                # and any future re-ingest stay in that same vector space.
+                # See tests/test_embedding_payload.py.
+                check_embedding_ctx_length=False,
             )
             logger.info(
                 f"Embeddings initialized with model: {self.config.embedding_model} "
@@ -1178,13 +1202,30 @@ Génère une explication détaillée à la première personne de la technique co
             "Tu es un classificateur de pertinence pour un assistant pédagogique en arts et métiers.\n"
             "On te donne la question de l'apprenti et les documents effectivement récupérés du corpus.\n"
             "Détermine si ces documents permettent réellement de répondre à la question posée.\n\n"
+            # Retrieval always returns its top-k from both collections, so a few
+            # off-topic documents ride along with the good ones — the annotation
+            # collection holds 15 clips, so its nearest two come back whatever was
+            # asked. Without this paragraph the classifier reads "ces documents" as
+            # all of them and refuses whenever the off-topic ones are present, even
+            # with the answer sitting in the set: the four chunks giving the glass
+            # working temperatures (900/1000/1200/2000 °C) scored SUFFISANT 6/6 on
+            # their own and INSUFFISANT 6/6 once two bevel clips were appended — at
+            # temperature 0.4 it flipped intermittently, which is what made the bug
+            # look random. Saying off-topic documents are expected, and that one
+            # sufficient document is enough, scored 36/36 on the live model across
+            # temperatures 0.0 and 0.4 while still refusing the off-topic clips
+            # alone and an unrelated question. See
+            # tests/test_assess_relevance_offtopic.py.
+            "Les documents proviennent d'une recherche automatique : certains sont hors sujet. "
+            "Ignore-les. Juge uniquement s'il existe AU MOINS UN document contenant "
+            "l'information demandée.\n\n"
             f'Question : "{query}"\n\n'
             f"Documents récupérés :\n{context_text}\n\n"
             "Réponds avec EXACTEMENT un mot parmi :\n"
-            "  SUFFISANT — les documents traitent bien du sujet demandé et permettent de répondre.\n"
+            "  SUFFISANT — au moins un document contient l'information demandée.\n"
             "  AMBIGU — les documents traitent d'un sujet proche du domaine mais pas exactement "
             "celui demandé (ex : une autre technique du même métier), une clarification aiderait.\n"
-            "  INSUFFISANT — les documents ne traitent pas du tout du sujet demandé."
+            "  INSUFFISANT — aucun document ne traite du sujet demandé."
         )
 
         try:

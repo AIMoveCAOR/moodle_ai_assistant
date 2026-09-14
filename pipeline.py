@@ -23,6 +23,25 @@ from api.models import is_placeholder_project_name
 
 
 logger = logging.getLogger(__name__)
+
+
+def narrow_to_domain(
+    enrolled_course_ids: Optional[list[str]], domain_course_ids: list[str]
+) -> list[str]:
+    """Restrict a user's course scope to one craft domain.
+
+    ``enrolled_course_ids`` is ``None`` for site admins, meaning "every indexed
+    course" (see SiloService.get_enrolled_course_ids). Clicking a craft button
+    must still narrow them to that craft, so ``None`` resolves to the domain's
+    own courses rather than falling through as "no filter".
+
+    For everyone else this is an intersection, and that is the access-control
+    guarantee: selecting a domain can never reach a course the user is not
+    enrolled in. ``[]`` in therefore stays ``[]`` out.
+    """
+    if enrolled_course_ids is None:
+        return list(domain_course_ids)
+    return [cid for cid in enrolled_course_ids if cid in domain_course_ids]
 test_thread_id = "abc123"
 test_config = RunnableConfig({"configurable": {"thread_id": test_thread_id}})
 StreamMode = Literal["values", "updates"]
@@ -477,7 +496,10 @@ class MoodleAIAssistantPipeline:
 
             # Resolve silo scope — inner catch yields error JSON-line and returns early on DB failure
             user_cohort_ids: list[int] = []
-            enrolled_course_ids: list[str] = []
+            # None means "no enrolment filter" (site admins); [] means "no
+            # courses". The default stays [] so an anonymous caller — user_id
+            # absent or <= 0, which skips the block below — sees nothing.
+            enrolled_course_ids: Optional[list[str]] = []
             inferred_craft: Optional[str] = None
             if user_id and user_id > 0:
                 try:
@@ -491,9 +513,9 @@ class MoodleAIAssistantPipeline:
                         domain_course_ids = await asyncio.to_thread(
                             self.silo_service.get_course_ids_by_category, domain_entry["category_id"]
                         )
-                        enrolled_course_ids = [
-                            cid for cid in enrolled_course_ids if cid in domain_course_ids
-                        ]
+                        enrolled_course_ids = narrow_to_domain(
+                            enrolled_course_ids, domain_course_ids
+                        )
                     elif course_id:
                         # No domain button clicked, but the question is asked from
                         # inside a course — infer the craft from that course's
