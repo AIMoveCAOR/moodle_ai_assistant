@@ -32,6 +32,15 @@ _CATEGORY_COURSES_QUERY = """
     WHERE category = %s
 """
 
+# Moodle keeps its site administrators in a single comma-separated config value,
+# not in mdl_role_assignments — an admin typically has no role assignment and no
+# enrolment row anywhere. See get_enrolled_course_ids for why that matters here.
+_SITEADMINS_QUERY = """
+    SELECT value
+    FROM mdl_config
+    WHERE name = 'siteadmins'
+"""
+
 
 class SiloService:
     """Resolves per-user access scope from the Moodle MySQL DB.
@@ -56,6 +65,7 @@ class SiloService:
         self._cohort_cache: dict[int, tuple[list[int], float]] = {}
         self._course_cache: dict[int, tuple[list[str], float]] = {}
         self._category_course_cache: dict[int, tuple[list[str], float]] = {}
+        self._siteadmin_cache: tuple[Optional[set[str]], float] = (None, 0.0)
 
     def _connect(self):
         return pymysql.connect(
@@ -88,8 +98,54 @@ class SiloService:
         logger.debug(f"SiloService: user {user_id} cohorts={result}")
         return result
 
-    def get_enrolled_course_ids(self, user_id: int) -> list[str]:
-        """Return active Moodle course IDs the user is enrolled in."""
+    def _siteadmin_ids(self, cur=None) -> set[str]:
+        """The `siteadmins` id set, cached for ``_cache_ttl`` like everything else.
+
+        Takes an open cursor when the caller already has one, so resolving a
+        user's scope stays a single connection rather than two.
+        """
+        cached, ts = self._siteadmin_cache
+        if cached is not None and (time.time() - ts) < self._cache_ttl:
+            return cached
+
+        if cur is not None:
+            cur.execute(_SITEADMINS_QUERY)
+            rows = cur.fetchall()
+        else:
+            conn = None
+            try:
+                conn = self._connect()
+                with conn.cursor() as own:
+                    own.execute(_SITEADMINS_QUERY)
+                    rows = own.fetchall()
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        raw = rows[0][0] if rows and rows[0] and rows[0][0] else ""
+        result = {part.strip() for part in str(raw).split(",") if part.strip()}
+        self._siteadmin_cache = (result, time.time())
+        return result
+
+    def is_site_admin(self, user_id: int) -> bool:
+        """True if the user is listed in Moodle's `siteadmins` config value.
+
+        The value is a comma-separated list of user ids ("2,3,19,280"). Compared
+        element-wise, never as a substring, so user 28 does not match 280. A
+        missing or unreadable row means "not an admin" — the safe direction.
+        """
+        return str(user_id) in self._siteadmin_ids()
+
+    def get_enrolled_course_ids(self, user_id: int) -> Optional[list[str]]:
+        """Return active Moodle course IDs the user is enrolled in.
+
+        Returns ``None`` — meaning *no enrolment filter*, every indexed course —
+        for site administrators, who reach every course in Moodle without an
+        enrolment row and would otherwise resolve to ``[]``. Callers pass this
+        straight to ``similarity_search_all_courses(allowed_course_ids=...)``,
+        where ``None`` skips the filter and ``[]`` allows nothing; an ordinary
+        user enrolled in nothing must keep getting ``[]``.
+        """
         cached, ts = self._course_cache.get(user_id, (None, 0.0))
         if cached is not None and (time.time() - ts) < self._cache_ttl:
             return list(cached)
@@ -98,6 +154,11 @@ class SiloService:
         try:
             conn = self._connect()
             with conn.cursor() as cur:
+                if str(user_id) in self._siteadmin_ids(cur):
+                    logger.debug(
+                        f"SiloService: user {user_id} is a site admin — no course filter"
+                    )
+                    return None
                 cur.execute(_ENROL_QUERY, (user_id,))
                 rows = cur.fetchall()
         finally:
