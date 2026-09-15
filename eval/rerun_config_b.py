@@ -15,7 +15,7 @@ def make_state(query):
     return {
         'messages': [HumanMessage(content=query)],
         'context': [], 'video_metadata': None, 'refined_query': None,
-        'hypothetical_document': None, 'enhanced_query': None,
+        'enhanced_query': None,
         'query_variants': [], 'route': None, 'selected_domain': None, 'course_id': None,
     }
 

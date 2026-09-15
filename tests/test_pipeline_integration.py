@@ -681,32 +681,6 @@ def test_assess_relevance_prompt_includes_answer_past_300_chars():
     )
 
 
-def test_hyde_generates_document():
-    """Test that hyde_generate produces a non-empty Document."""
-    mock_llm = Mock()
-    mock_llm.invoke.return_value = "This is a fake hypothetical document about glassblowing techniques."
-
-    mock_config = ConfigurationManager()
-    rag_service = RAGService(config_manager=mock_config)
-    rag_service.llm = mock_llm
-
-    state = ConversationState(
-        messages=[HumanMessage(content="How do I fix drooling glass?")],
-        context=[],
-        video_metadata=None,
-        hyde_doc=None
-    )
-
-    result = rag_service.hyde_generate(state)
-
-    assert "hyde_doc" in result
-    assert isinstance(result["hyde_doc"], Document)
-    assert len(result["hyde_doc"].page_content) > 0
-
-    mock_llm.invoke.assert_called_once()
-
-
-# Tests for _classify_in_domain method
 def _make_pipeline_with_mock_llm(response_content: str):
     """Return a MoodleAIAssistantPipeline whose LLM is fully mocked."""
     from pipeline import MoodleAIAssistantPipeline
