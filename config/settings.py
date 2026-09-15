@@ -52,7 +52,14 @@ class RAGConfig:
         default_factory=lambda: os.getenv("USE_REMOTE_RERANKER", "false").lower() == "true"
     )
     reranker_model: str = field(
-        default_factory=lambda: os.getenv("RERANKER_MODEL", "rerank-multilingual-v3.0")
+        # BGE, not Qwen3-Reranker. Qwen3 rerankers expect their own instruction
+        # template; through the plain Cohere-style endpoint they return scores
+        # unrelated to relevance — "Retour d'information" from an unrelated
+        # course scored 0.938 for a glass-temperature question, above every
+        # chunk that answered it. BGE ranked the four answering chunks 1–5.
+        # (The previous default, rerank-multilingual-v3.0, is rejected by the
+        # Infomaniak API outright.)
+        default_factory=lambda: os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
     )
     # Cohere scores are calibrated probabilities in [0,1]; BGE scores are raw
     # logits where 0.0 is the threshold.  Keep thresholds separate.

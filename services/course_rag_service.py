@@ -1009,6 +1009,7 @@ class CourseRAGService:
         k_per_course: int = 4,
         priority_course_id: Optional[str] = None,
         allowed_course_ids: Optional[list] = None,
+        priority_k: int = 6,
     ) -> List[Document]:
         """Query course collections the user is enrolled in.
 
@@ -1056,7 +1057,7 @@ class CourseRAGService:
 
         for cid in course_ids:
             if cid == priority_course_id:
-                docs = self._search_with_embedding(embedding, cid, k=6)
+                docs = self._search_with_embedding(embedding, cid, k=priority_k)
                 priority_docs.extend(docs)
             else:
                 docs = self._search_with_embedding(embedding, cid, k=k_per_course)

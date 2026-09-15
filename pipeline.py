@@ -225,13 +225,13 @@ class MoodleAIAssistantPipeline:
         """Build and compile the PRF conversation graph with cross-encoder reranking.
 
         Pipeline:
-          detect_and_translate_query → parse_query_intent → retrieve_initial →
-          refine_query_prf → retrieve_final_dual → rerank → assess_relevance → generate
+          detect_and_translate_query → parse_query_intent → retrieve_ranked →
+          assess_relevance → generate
 
-        retrieve_initial and retrieve_final_dual cast a wide net from both the
-        video annotation collection and per-course collections.  rerank filters
-        and re-orders the candidate set using a local multilingual cross-encoder,
-        replacing the old L2 distance guardrail with a principled relevance score.
+        retrieve_ranked pulls a wide pool from the video annotation collection
+        and the per-course collections, scores all of it with the reranker and
+        keeps the best few — see its comment block for why the former PRF chain
+        was replaced.
         assess_relevance is a second, independent check — see its docstring for
         why a high rerank score alone isn't sufficient here. Note: this compiled
         graph is linear (add_sequence) and can't branch on assess_relevance's
@@ -243,10 +243,7 @@ class MoodleAIAssistantPipeline:
                 functions=[
                     "detect_and_translate_query",
                     "parse_query_intent",
-                    "retrieve_initial",
-                    "refine_query_prf",
-                    "retrieve_final_dual",
-                    "rerank",
+                    "retrieve_ranked",
                     "assess_relevance",
                     "generate",
                 ]
@@ -630,33 +627,12 @@ class MoodleAIAssistantPipeline:
                 "data": {"is_pagination_request": state.get("is_pagination_request", False)},
             }) + "\n"
 
-            # --- PRF step 1: initial retrieval ---
+            # --- Retrieval: wide pool, reranked as a whole, best few kept ---
+            # (see RAGService.retrieve_ranked). disable_rerank is no longer
+            # honoured: an unranked pool is exactly the defect this replaced.
             yield json.dumps({"event": "status", "data": "Recherche dans la base de connaissances…"}) + "\n"
-            result = await asyncio.to_thread(self.rag_service.retrieve_initial, state)
+            result = await asyncio.to_thread(self.rag_service.retrieve_ranked, state)
             state.update(result)
-
-            # --- PRF step 2: corpus-grounded query refinement ---
-            yield json.dumps({"event": "status", "data": "Reformulation de la question…"}) + "\n"
-            result = await asyncio.to_thread(self.rag_service.refine_query_prf, state)
-            state.update(result)
-
-            # --- PRF step 3: final retrieval with refined query ---
-            yield json.dumps({"event": "status", "data": "Récupération des sources pertinentes…"}) + "\n"
-            result = await asyncio.to_thread(self.rag_service.retrieve_final_dual, state)
-            state.update(result)
-
-            # --- PRF step 4: cross-encoder reranking and relevance filtering ---
-            if not disable_rerank:
-                yield json.dumps({"event": "status", "data": "Classement des résultats…"}) + "\n"
-                # Cap candidates before reranking — bge-reranker-v2-m3 takes
-                # ~5 s per pair on a 2-core CPU, so keep the list tight.
-                ctx = state.get("context", [])
-                if len(ctx) > self.MAX_RERANK_CANDIDATES:
-                    state["context"] = ctx[: self.MAX_RERANK_CANDIDATES]
-                # Run synchronous cross-encoder inference in a thread so the
-                # event loop remains responsive during the ~20-30 s prediction.
-                result = await asyncio.to_thread(self.rag_service.rerank, state)
-                state.update(result)
 
             # --- Relevance gate — runs before video cards or generate, so they
             # can never contradict each other the way generate's own ad-hoc

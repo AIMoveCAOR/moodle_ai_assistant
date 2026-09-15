@@ -58,6 +58,31 @@ def merge_dedup_interleaved(a: list, b: list) -> List:
     return merged
 
 
+# A document is kept when it scores at least this fraction of the best score…
+RELATIVE_SCORE_FLOOR = 0.2
+# …and never below this absolute score. Kept low on purpose: BGE scores for a
+# legitimate but loosely phrased question can sit well under 0.01, and an empty
+# selection is a guaranteed refusal. Deciding that a pool is irrelevant is
+# assess_relevance's job, not this cut's.
+ABSOLUTE_SCORE_FLOOR = 0.002
+
+
+def select_ranked(scored: List[Tuple[float, Any]], limit: int) -> List:
+    """Pick the context from (score, doc) pairs sorted by score desc.
+
+    Relative rather than a fixed threshold, because reranker scores for a broad
+    question are low across the board: for the glass-temperatures question the
+    five chunks that carry the answer scored 0.33, 0.18, 0.12, 0.12 and 0.08,
+    then the next one 0.02. The old fixed 0.1 cut dropped the fifth family;
+    20% of the top keeps all five and still drops the tail.
+    """
+    if not scored:
+        return []
+    top = scored[0][0]
+    cutoff = max(top * RELATIVE_SCORE_FLOOR, ABSOLUTE_SCORE_FLOOR)
+    return [doc for score, doc in scored if score >= cutoff][:limit]
+
+
 def stable_document_id(document) -> str:
     """A deterministic id for a document, so re-ingesting replaces rather than appends.
 
@@ -294,10 +319,23 @@ class RAGService:
                 "- N'utilisez JAMAIS d'emojis.\n"
                 "- Ne produisez JAMAIS de balises <think> ni de raisonnement interne visible.\n"
                 "- N'inventez JAMAIS d'URLs, de liens, de références bibliographiques ou de citations.\n"
-                "- Basez-vous EXCLUSIVEMENT sur le contexte documentaire fourni. "
-                "Si le contexte est insuffisant ou ne traite pas de la question posée, répondez UNIQUEMENT : "
-                f"\"{self.INSUFFICIENT_CONTEXT_MESSAGE}\" "
-                "Ne complétez JAMAIS par des connaissances extérieures au contexte fourni.\n\n"
+                # No refusal sentence here, deliberately. Whether the corpus can answer
+                # is decided before generation by assess_relevance, which emits the
+                # fixed refusal itself. A second refusal rule in this prompt was a
+                # stricter, literal-minded gate that overrode it: given the four
+                # glass-family chunks ("Température de travail : 900/1000/1200/2000 °C")
+                # for "températures de fusion des verres classiques", the model
+                # answered with the refusal because the word "fusion" was absent.
+                "- Basez-vous EXCLUSIVEMENT sur les documents fournis ; n'ajoutez JAMAIS de connaissances "
+                "extérieures, de chiffres ou de faits qui n'y figurent pas.\n"
+                "- Ces documents ont déjà été sélectionnés comme pertinents pour la question : répondez "
+                "avec ce qu'ils contiennent. Certains peuvent être hors sujet (par exemple une vidéo sur "
+                "un autre geste) : ignorez-les sans les mentionner.\n"
+                "- Si les documents emploient un terme voisin de celui de la question (par exemple "
+                "« température de travail » pour « température de fusion »), donnez l'information en "
+                "reprenant le terme exact des documents et signalez la nuance en une phrase.\n"
+                "- Si les documents ne couvrent qu'une partie de la question, répondez à cette partie "
+                "puis indiquez brièvement ce qui n'y figure pas.\n\n"
                 "STRUCTURE DE LA RÉPONSE — adaptez-la à la nature de la question :\n"
                 "- Pour une question factuelle simple (température, durée, proportion, définition…), "
                 "répondez directement et précisément sans imposer de sections superflues.\n"
@@ -368,7 +406,10 @@ class RAGService:
         desired_video_count = state.get("desired_video_count", 1)
         shown_video_count = len(state.get("video_metadata") or [])
         undersupply_suffix = ""
-        if shown_video_count < desired_video_count:
+        # Only when the learner explicitly asked for several videos. With the
+        # default of 1 this fired on every text-only answer and the model
+        # printed the "internal" note verbatim ("Note : Aucune vidéo…").
+        if desired_video_count > 1 and shown_video_count < desired_video_count:
             undersupply_suffix = (
                 f"\n\n(Note interne : seulement {shown_video_count} vidéo(s) pertinente(s) "
                 f"trouvée(s) sur les {desired_video_count} demandées — mentionne-le brièvement "
@@ -391,16 +432,6 @@ class RAGService:
                 "- Répondez TOUJOURS en français correct et soigné, sans fautes d'orthographe ni de grammaire.\n",
                 "- Répondez TOUJOURS dans la même langue que la question de l'apprenti "
                 "(ci-dessous), avec une orthographe et une grammaire soignées.\n",
-            )
-            # The prompt also pins the exact refusal sentence to reply with when
-            # the context is insufficient, in French. Left as-is, the "answer in
-            # the learner's language" rule above and that literal French sentence
-            # contradict each other, and the model resolves the contradiction
-            # however it likes. Swap in the same refusal the deterministic
-            # INSUFFICIENT path would have emitted, so both agree.
-            system_prompt = system_prompt.replace(
-                self.INSUFFICIENT_CONTEXT_MESSAGE,
-                self.insufficient_context_message(query_language),
             )
         else:
             system_prompt = self.system_prompt
@@ -2008,6 +2039,103 @@ Génère une explication détaillée à la première personne de la technique co
             f"(annotations={len(annotation_results)}, course={len(course_results)})"
         )
         return {"context": results, "video_metadata": video_metadata}
+
+    # ── Single-pass retrieval: wide pool → rerank everything → select ─────────
+    #
+    # Replaces retrieve_initial → refine_query_prf → retrieve_final_dual → rerank
+    # on the live chat path (those methods remain for the eval scripts).
+    #
+    # Why the old chain could not answer broad questions: bge_multilingual_gemma2
+    # ranks short syllabus fragments ("Objectif : Comprendre les matériaux…")
+    # above the chunks carrying the facts, the priority course only contributed
+    # its 6 nearest chunks, and the merged list was truncated to 8 BY POSITION
+    # before the reranker ever saw it. For "Quelles sont les températures de
+    # fusion des verres classiques ?" the four glass-family chunks sat at vector
+    # ranks 8–14 and never reached the reranker; the PRF rewrite then drifted to
+    # "points de ramollissement et recuisson" and made it worse. Reranking the
+    # top 30 of that course instead puts exactly those four chunks and the
+    # service-temperature table in the top 5 (scores 0.33–0.08, next 0.02).
+    RETRIEVAL_PRIORITY_COURSE_K = 30
+    RETRIEVAL_OTHER_COURSE_K = 3
+    RETRIEVAL_ANNOTATION_K = 5
+    RETRIEVAL_MAX_POOL = 80
+
+    def retrieve_ranked(self, state: ConversationState) -> Dict[str, Any]:
+        """Build a wide candidate pool, score all of it, keep the best few."""
+        query = state.get("search_query") or str(state.get("messages")[-1].content)
+        if state.get("is_pagination_request") and state.get("last_topical_query"):
+            query = state["last_topical_query"]
+
+        pool: List[Document] = []
+
+        user_cohort_ids = state.get("user_cohort_ids")
+        domain_craft = (
+            DOMAIN_MAP.get(state.get("selected_domain"), {}).get("craft")
+            or state.get("domain_craft")
+        )
+        cohort_filter = (
+            build_cohort_filter(user_cohort_ids, craft=domain_craft)
+            if user_cohort_ids is not None else None
+        )
+        if self.get_vector_store_data().get("ids"):
+            pool.extend(self.similarity_search(
+                query, k=self.RETRIEVAL_ANNOTATION_K, cohort_filter=cohort_filter
+            ))
+
+        if self.course_rag_service:
+            pool = self._merge_dedup(pool, self.course_rag_service.similarity_search_all_courses(
+                query,
+                k_per_course=self.RETRIEVAL_OTHER_COURSE_K,
+                priority_course_id=state.get("course_id"),
+                allowed_course_ids=state.get("enrolled_course_ids"),
+                priority_k=self.RETRIEVAL_PRIORITY_COURSE_K,
+            ))
+
+        pool = pool[: self.RETRIEVAL_MAX_POOL]
+        if not pool:
+            logger.info("retrieve_ranked: empty candidate pool")
+            return {"context": [], "video_metadata": []}
+
+        try:
+            scored = self._score_documents(query, pool)
+            selected = select_ranked(scored, self.MAX_CONTEXT_DOCS)
+        except Exception as e:
+            # Fail open on vector order: a reranker outage must degrade the
+            # answer, not turn every question into a refusal.
+            logger.error(f"retrieve_ranked: scoring failed ({e}) — using vector order")
+            selected = pool[: self.MAX_CONTEXT_DOCS]
+
+        logger.info(
+            f"retrieve_ranked: pool={len(pool)} → selected={len(selected)} "
+            f"{[d.metadata.get('source', '?') for d in selected]}"
+        )
+        video_metadata = self._extract_video_metadata(
+            selected,
+            limit=state.get("desired_video_count", 1),
+            exclude_ids=set(state.get("shown_video_ids") or []),
+            preferred_video_id=state.get("referenced_video_id"),
+        )
+        return {"context": selected, "video_metadata": video_metadata}
+
+    def _score_documents(self, query: str, docs: List[Document]) -> List[Tuple[float, Document]]:
+        """Relevance-score every document, sorted desc (remote API or local cross-encoder)."""
+        rag_cfg = self.config_manager.get_config().rag
+        if rag_cfg.use_remote_reranker:
+            return InfomaniakReranker(
+                api_key=self.config_manager.get_env_var("INFOMANIAK_API_KEY"),
+                product_id=self.config_manager.get_env_var("INFOMANIAK_PRODUCT_ID"),
+                model=rag_cfg.reranker_model,
+                threshold=rag_cfg.remote_reranker_score_threshold,
+            ).score(query, docs)
+        # Local BGE logits: map through a sigmoid so select_ranked's relative
+        # rule sees the same [0, 1] scale as the remote API.
+        import math
+        logits = self.cross_encoder.predict([(query, d.page_content) for d in docs])
+        return sorted(
+            ((1.0 / (1.0 + math.exp(-float(s))), d) for s, d in zip(logits, docs)),
+            key=lambda x: x[0],
+            reverse=True,
+        )
 
     # ============================================================================
     # LEGACY METHODS (kept for reference - can be removed after testing HyDE)

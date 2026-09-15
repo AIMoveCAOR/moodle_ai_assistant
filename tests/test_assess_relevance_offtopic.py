@@ -86,3 +86,27 @@ def test_empty_context_still_refuses_without_calling_the_llm():
     service, captured = _service_with_captured_prompt()
     assert service.assess_relevance(_state([]))["relevance_assessment"] == "INSUFFICIENT"
     assert "prompt" not in captured, "empty context must short-circuit before the LLM call"
+
+
+def test_generation_prompt_carries_no_refusal_of_its_own():
+    """Refusal is assess_relevance's decision alone.
+
+    A refusal clause in the generation prompt acted as a second, literal-minded
+    gate: with all four glass-family chunks in context ("Température de
+    travail : …") the model still answered with the refusal for "températures de
+    fusion", because the exact word was missing.
+    """
+    from services.rag_service import RAGService
+
+    service = object.__new__(RAGService)
+    service.INSUFFICIENT_CONTEXT_MESSAGE = RAGService.INSUFFICIENT_CONTEXT_MESSAGE
+    with pytest.MonkeyPatch.context() as mp:
+        for name in ("_initialize_embeddings", "_initialize_vector_store",
+                     "_initialize_llm", "_initialize_cross_encoder", "_initialize_langid"):
+            mp.setattr(RAGService, name, lambda self: None)
+        RAGService.__init__(service, MagicMock())
+
+    prompt = service.system_prompt
+    assert RAGService.INSUFFICIENT_CONTEXT_MESSAGE not in prompt
+    assert "hors sujet" in prompt.lower()
+    assert "terme voisin" in prompt.lower(), "prompt must allow mapping close terminology"

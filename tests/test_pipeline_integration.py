@@ -15,6 +15,21 @@ def _make_rag_service(llm=None):
     return rag_service
 
 
+
+def _run_legacy_mocks_as_retrieve_ranked(rag_service):
+    """stream_response now makes one retrieve_ranked call instead of
+    retrieve_initial -> refine_query_prf -> retrieve_final_dual -> rerank.
+    These tests were written against the four mocks; run them in the old order
+    so each test keeps asserting what it asserted (last writer wins on state).
+    """
+    def _retrieve_ranked(state):
+        merged = {}
+        for step in ("retrieve_initial", "refine_query_prf", "retrieve_final_dual", "rerank"):
+            result = getattr(rag_service, step)({**state, **merged}) or {}
+            merged.update(result)
+        return merged
+    return _retrieve_ranked
+
 def test_extract_video_metadata_returns_list_with_multiple_videos():
     """_extract_video_metadata should return up to `limit` distinct videos, not just the first."""
     rag_service = _make_rag_service()
@@ -802,6 +817,7 @@ async def test_stream_response_does_not_short_circuit_in_domain():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -848,6 +864,7 @@ async def test_stream_response_narrows_enrolled_courses_by_selected_domain():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -896,6 +913,7 @@ async def test_stream_response_skips_course_narrowing_for_unmapped_domain():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -948,6 +966,7 @@ async def test_stream_response_calls_detect_and_translate_first():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Hello"
@@ -981,6 +1000,7 @@ async def test_stream_response_skips_translation_status_for_french():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -1016,6 +1036,7 @@ async def test_stream_response_calls_parse_query_intent_and_emits_intent_event()
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": [], "video_metadata": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -1059,6 +1080,7 @@ async def test_stream_response_seeds_state_from_previous_sources_and_message():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": [], "video_metadata": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -1102,6 +1124,7 @@ async def test_stream_response_emits_one_event_per_video():
             {"video_id": "v2", "filename": "b.mp4"},
         ],
     })
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
@@ -1141,6 +1164,7 @@ def _mock_common_pipeline_nodes(pipeline, video_metadata=None):
         "context": [Document(page_content="pertinent")],
         "video_metadata": video_metadata or [],
     })
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
 
 @pytest.mark.asyncio
@@ -1240,6 +1264,7 @@ async def test_stream_response_kill_switch_skips_node_entirely():
     pipeline.rag_service.refine_query_prf = MagicMock(return_value={})
     pipeline.rag_service.retrieve_final_dual = MagicMock(return_value={"context": []})
     pipeline.rag_service.rerank = MagicMock(return_value={"context": []})
+    pipeline.rag_service.retrieve_ranked = _run_legacy_mocks_as_retrieve_ranked(pipeline.rag_service)
 
     async def _fake_stream_generate(state):
         yield "Bonjour"
