@@ -87,3 +87,58 @@ def test_scoring_failure_falls_back_to_vector_order():
     result = service.retrieve_ranked(_state())
     assert len(result["context"]) == RAGService.MAX_CONTEXT_DOCS
     assert result["context"][0].metadata["source"] == "c0"
+
+
+# ── PRF second pass ────────────────────────────────────────────────────────
+
+
+def _prf_service(first_pool, second_pool, first_scores, extra_scores, refined="requête PRF"):
+    service = _service(first_pool)
+    service._candidate_pool = MagicMock(side_effect=[first_pool, second_pool])
+    service._score_documents = MagicMock(side_effect=[first_scores, extra_scores])
+    service.refine_query_prf = MagicMock(return_value={"refined_query": refined})
+    return service
+
+
+def test_prf_adds_candidates_scored_against_the_original_query():
+    a, b, c = _doc("a"), _doc("b"), _doc("c")
+    service = _prf_service(
+        first_pool=[a, b], second_pool=[b, c],
+        first_scores=[(0.5, a), (0.01, b)], extra_scores=[(0.4, c)],
+    )
+    result = service.retrieve_ranked(_state())
+
+    assert [d.metadata["source"] for d in result["context"]] == ["a", "c"]
+    assert result["refined_query"] == "requête PRF"
+    second_call = service._score_documents.call_args_list[1]
+    assert second_call.args[0] == "q", "PRF candidates must be scored against the learner's query"
+    assert second_call.args[1] == [c], "only candidates new to the pool are re-scored"
+
+
+def test_prf_is_grounded_on_reranked_documents():
+    docs = [_doc(s) for s in "wxyz"]
+    service = _prf_service(
+        first_pool=docs, second_pool=[],
+        first_scores=[(0.9, docs[3]), (0.8, docs[2]), (0.7, docs[1]), (0.6, docs[0])],
+        extra_scores=[],
+    )
+    service.retrieve_ranked(_state())
+    grounding = service.refine_query_prf.call_args.args[0]["context"]
+    assert [d.metadata["source"] for d in grounding] == ["z", "y", "x"]
+
+
+def test_prf_failure_keeps_first_pass():
+    a = _doc("a")
+    service = _prf_service([a], [], [(0.5, a)], [])
+    service.refine_query_prf = MagicMock(side_effect=RuntimeError("llm down"))
+    result = service.retrieve_ranked(_state())
+    assert [d.metadata["source"] for d in result["context"]] == ["a"]
+    assert result["refined_query"] is None
+
+
+def test_pagination_skips_prf():
+    a = _doc("a")
+    service = _prf_service([a], [], [(0.5, a)], [])
+    state = {**_state(), "is_pagination_request": True, "last_topical_query": "topic"}
+    service.retrieve_ranked(state)
+    service.refine_query_prf.assert_not_called()

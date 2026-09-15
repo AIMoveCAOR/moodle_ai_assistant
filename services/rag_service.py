@@ -1935,10 +1935,10 @@ class RAGService:
         )
         return {"context": results, "video_metadata": video_metadata}
 
-    # ── Single-pass retrieval: wide pool → rerank everything → select ─────────
+    # ── Ranked retrieval: wide pool → rerank → PRF adds candidates → select ───
     #
     # Replaces retrieve_initial → refine_query_prf → retrieve_final_dual → rerank
-    # on the live chat path (those methods remain for the eval scripts).
+    # on the live chat path; refine_query_prf is reused below as the PRF step.
     #
     # Why the old chain could not answer broad questions: bge_multilingual_gemma2
     # ranks short syllabus fragments ("Objectif : Comprendre les matériaux…")
@@ -1950,17 +1950,97 @@ class RAGService:
     # "points de ramollissement et recuisson" and made it worse. Reranking the
     # top 30 of that course instead puts exactly those four chunks and the
     # service-temperature table in the top 5 (scores 0.33–0.08, next 0.02).
+    #
+    # PRF is kept, but only as a recall booster that can ADD candidates:
+    #   1. pool from the learner's query, reranked against that query;
+    #   2. the PRF rewrite is grounded on the top-3 RERANKED documents (not the
+    #      vector top-3, which is what fed it syllabus boilerplate before);
+    #   3. the rewrite's new candidates join the pool and are scored against
+    #      the ORIGINAL query, so a drifting rewrite cannot displace good
+    #      chunks — at worst it contributes nothing.
     RETRIEVAL_PRIORITY_COURSE_K = 30
     RETRIEVAL_OTHER_COURSE_K = 3
     RETRIEVAL_ANNOTATION_K = 5
     RETRIEVAL_MAX_POOL = 80
+    PRF_GROUNDING_DOCS = 3
 
     def retrieve_ranked(self, state: ConversationState) -> Dict[str, Any]:
-        """Build a wide candidate pool, score all of it, keep the best few."""
+        """Wide pool → rerank → PRF second pass adds candidates → select."""
         query = state.get("search_query") or str(state.get("messages")[-1].content)
-        if state.get("is_pagination_request") and state.get("last_topical_query"):
+        is_pagination = bool(state.get("is_pagination_request") and state.get("last_topical_query"))
+        if is_pagination:
             query = state["last_topical_query"]
 
+        pool = self._candidate_pool(query, state)
+        if not pool:
+            logger.info("retrieve_ranked: empty candidate pool")
+            return {"context": [], "video_metadata": [], "refined_query": None}
+
+        refined_query = None
+        try:
+            scored = self._score_documents(query, pool)
+        except Exception as e:
+            # Fail open on vector order: a reranker outage must degrade the
+            # answer, not turn every question into a refusal. PRF is skipped —
+            # without scores it would be grounded on boilerplate again.
+            logger.error(f"retrieve_ranked: scoring failed ({e}) — using vector order")
+            scored = None
+
+        if scored is not None and not is_pagination:
+            refined_query, scored = self._prf_second_pass(query, state, scored)
+
+        selected = (
+            select_ranked(scored, self.MAX_CONTEXT_DOCS)
+            if scored is not None else pool[: self.MAX_CONTEXT_DOCS]
+        )
+        logger.info(
+            f"retrieve_ranked: candidates={len(scored) if scored is not None else len(pool)} "
+            f"→ selected={len(selected)} {[d.metadata.get('source', '?') for d in selected]}"
+        )
+        video_metadata = self._extract_video_metadata(
+            selected,
+            limit=state.get("desired_video_count", 1),
+            exclude_ids=set(state.get("shown_video_ids") or []),
+            preferred_video_id=state.get("referenced_video_id"),
+        )
+        return {"context": selected, "video_metadata": video_metadata, "refined_query": refined_query}
+
+    def _prf_second_pass(
+        self, query: str, state: ConversationState, scored: List[Tuple[float, Document]]
+    ) -> Tuple[Optional[str], List[Tuple[float, Document]]]:
+        """Rewrite the query from the best-ranked documents; add what it newly finds.
+
+        Returns (refined_query or None, scored list possibly extended). Never
+        raises and never removes a first-pass candidate.
+        """
+        try:
+            grounding = [doc for _, doc in scored[: self.PRF_GROUNDING_DOCS]]
+            refined = self.refine_query_prf(
+                {**state, "search_query": query, "context": grounding}
+            ).get("refined_query")
+            if not refined or refined.strip() == query.strip():
+                return None, scored
+
+            seen = {doc.metadata.get("source", "") for _, doc in scored}
+            extra = [
+                doc for doc in self._candidate_pool(refined, state)
+                if doc.metadata.get("source", "") not in seen
+            ]
+            if extra:
+                # Scored against the ORIGINAL query — see the comment block above.
+                scored = sorted(
+                    scored + self._score_documents(query, extra),
+                    key=lambda x: x[0],
+                    reverse=True,
+                )
+            logger.info(f"retrieve_ranked: PRF '{refined}' added {len(extra)} candidates")
+            return refined, scored
+        except Exception as e:
+            logger.error(f"retrieve_ranked: PRF second pass failed ({e}) — first pass only")
+            return None, scored
+
+    def _candidate_pool(self, query: str, state: ConversationState) -> List[Document]:
+        """Annotation clips (craft/cohort-filtered) + course chunks for one query."""
         pool: List[Document] = []
 
         user_cohort_ids = state.get("user_cohort_ids")
@@ -1986,31 +2066,7 @@ class RAGService:
                 priority_k=self.RETRIEVAL_PRIORITY_COURSE_K,
             ))
 
-        pool = pool[: self.RETRIEVAL_MAX_POOL]
-        if not pool:
-            logger.info("retrieve_ranked: empty candidate pool")
-            return {"context": [], "video_metadata": []}
-
-        try:
-            scored = self._score_documents(query, pool)
-            selected = select_ranked(scored, self.MAX_CONTEXT_DOCS)
-        except Exception as e:
-            # Fail open on vector order: a reranker outage must degrade the
-            # answer, not turn every question into a refusal.
-            logger.error(f"retrieve_ranked: scoring failed ({e}) — using vector order")
-            selected = pool[: self.MAX_CONTEXT_DOCS]
-
-        logger.info(
-            f"retrieve_ranked: pool={len(pool)} → selected={len(selected)} "
-            f"{[d.metadata.get('source', '?') for d in selected]}"
-        )
-        video_metadata = self._extract_video_metadata(
-            selected,
-            limit=state.get("desired_video_count", 1),
-            exclude_ids=set(state.get("shown_video_ids") or []),
-            preferred_video_id=state.get("referenced_video_id"),
-        )
-        return {"context": selected, "video_metadata": video_metadata}
+        return pool[: self.RETRIEVAL_MAX_POOL]
 
     def _score_documents(self, query: str, docs: List[Document]) -> List[Tuple[float, Document]]:
         """Relevance-score every document, sorted desc (remote API or local cross-encoder)."""
