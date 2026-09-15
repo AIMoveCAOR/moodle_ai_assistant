@@ -97,7 +97,6 @@ def make_state(query):
         'context': [],
         'video_metadata': None,
         'refined_query': None,
-        'hypothetical_document': None,
         'enhanced_query': None,
         'query_variants': [],
         'route': None,

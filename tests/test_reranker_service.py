@@ -4,7 +4,9 @@ from config.settings import RAGConfig
 def test_rag_config_remote_reranker_defaults():
     cfg = RAGConfig()
     assert cfg.use_remote_reranker is False
-    assert cfg.reranker_model == "rerank-multilingual-v3.0"
+    # BGE: Qwen3-Reranker scores near-randomly via this endpoint, and
+    # rerank-multilingual-v3.0 is rejected by the Infomaniak API.
+    assert cfg.reranker_model == "BAAI/bge-reranker-v2-m3"
     assert cfg.remote_reranker_score_threshold == 0.1
 
 

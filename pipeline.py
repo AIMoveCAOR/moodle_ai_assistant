@@ -589,7 +589,6 @@ class MoodleAIAssistantPipeline:
                 "context": [],
                 "video_metadata": [],
                 "refined_query": None,
-                "hypothetical_document": None,
                 "enhanced_query": None,
                 "query_variants": [],
                 "route": None,

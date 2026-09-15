@@ -2,9 +2,8 @@
 Step 4: Retrieval ablation evaluation.
 Config A: Baseline similarity_search
 Config B: Full PRF pipeline
-Config C: HyDE
 
-Saves results/config_{a,b,c}_results.json and prints summary table.
+Saves results/config_{a,b}_results.json and prints summary table.
 """
 
 import os
@@ -64,7 +63,6 @@ def make_state(query):
         'context': [],
         'video_metadata': None,
         'refined_query': None,
-        'hypothetical_document': None,
         'enhanced_query': None,
         'query_variants': [],
         'route': None,
@@ -95,18 +93,6 @@ def run_config_b(rag, query):
     final_docs = s3.get('context', [])
 
     return final_docs, refined_query, initial_context
-
-
-def run_config_c(rag, query):
-    """Config C: HyDE — generate_hypothetical_document → retrieve_with_hyde."""
-    state = make_state(query)
-
-    s1 = rag.generate_hypothetical_document(state)
-    state2 = {**state, **s1}
-    s2 = rag.retrieve_with_hyde(state2)
-    docs = s2.get('context', [])
-
-    return docs, None
 
 
 def extract_ids_from_docs(docs):
@@ -301,23 +287,12 @@ def main():
         json.dump(results_b, f, ensure_ascii=False, indent=2)
     print("Saved config_b_results.json")
 
-    # Config C: HyDE
-    def config_c_fn(rag, query):
-        docs, rq = run_config_c(rag, query)
-        return docs, rq
-
-    results_c = run_config('C', rag, ground_truth, config_c_fn)
-    with open(os.path.join(RESULTS_DIR, 'config_c_results.json'), 'w', encoding='utf-8') as f:
-        json.dump(results_c, f, ensure_ascii=False, indent=2)
-    print("Saved config_c_results.json")
-
     # Print summary table
     def fmt(v):
         return f"{v:.4f}"
 
     agg_a = results_a['aggregate']
     agg_b = results_b['aggregate']
-    agg_c = results_c['aggregate']
 
     print("\n")
     print("=" * 80)
@@ -339,7 +314,6 @@ def main():
 
     print(row("A (raw)", agg_a))
     print(row("B (PRF)", agg_b))
-    print(row("C (HyDE)", agg_c))
     print("=" * 80)
     print(f"(n={agg_a.get('n_queries',0)} non-adversarial queries)")
 
