@@ -1,7 +1,7 @@
 """Infomaniak Cohere-compatible remote reranker."""
 
 import logging
-from typing import List
+from typing import List, Tuple
 
 import httpx
 from langchain_core.documents.base import Document
@@ -26,6 +26,14 @@ class InfomaniakReranker:
 
     def rerank(self, query: str, documents: List[Document]) -> List[Document]:
         """Return documents filtered by threshold and sorted by relevance score (desc)."""
+        return [doc for score, doc in self.score(query, documents) if score >= self._threshold]
+
+    def score(self, query: str, documents: List[Document]) -> List[Tuple[float, Document]]:
+        """Return every document with its relevance score, sorted by score (desc).
+
+        No threshold is applied: callers that select relative to the top score
+        (RAGService.retrieve_ranked) need the full distribution.
+        """
         if not documents:
             return []
 
@@ -49,33 +57,21 @@ class InfomaniakReranker:
             )
 
         results = response.json().get("results", [])
-        scored = [(r["relevance_score"], documents[r["index"]]) for r in results]
-        passing = [(score, doc) for score, doc in scored if score >= self._threshold]
-        passing.sort(key=lambda x: x[0], reverse=True)
-
-        all_scores_sorted = sorted([round(float(s), 4) for s, _ in scored], reverse=True)
+        scored = sorted(
+            ((float(r["relevance_score"]), documents[r["index"]]) for r in results),
+            key=lambda x: x[0],
+            reverse=True,
+        )
 
         # Per-document scores, so it is possible to tell WHICH document earned
         # which score — without this, a wrong video card is indistinguishable
-        # from a wrong ranking.
-        for score, doc in sorted(scored, key=lambda x: x[0], reverse=True):
+        # from a wrong ranking. Only the head: the pool can be 50+ documents.
+        for score, doc in scored[:12]:
             logger.info(
                 "  rerank %.4f  %-16s %s",
                 score,
                 doc.metadata.get("type", "?"),
                 doc.metadata.get("source", "?")[:80],
             )
-
-        if passing:
-            logger.info(
-                f"remote rerank: {len(documents)} candidates → {len(passing)} passed "
-                f"threshold={self._threshold} (top score={passing[0][0]:.3f}, "
-                f"all scores={all_scores_sorted})"
-            )
-        else:
-            logger.info(
-                f"remote rerank: {len(documents)} candidates → 0 passed "
-                f"threshold={self._threshold} (all scores={all_scores_sorted})"
-            )
-
-        return [doc for _, doc in passing]
+        logger.info(f"remote rerank: scored {len(documents)} candidates")
+        return scored

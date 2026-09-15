@@ -88,13 +88,13 @@ def test_empty_context_still_refuses_without_calling_the_llm():
     assert "prompt" not in captured, "empty context must short-circuit before the LLM call"
 
 
-def test_generation_prompt_does_not_refuse_because_of_off_topic_documents():
-    """The generator must apply the same rule as the classifier.
+def test_generation_prompt_carries_no_refusal_of_its_own():
+    """Refusal is assess_relevance's decision alone.
 
-    Otherwise assess_relevance passes the question and generation refuses anyway
-    because the off-topic clips are in its context (old prompt: 6/9 refusals on
-    the live model for questions the course chunks answered; new prompt: 0/9,
-    while still refusing 6/6 unrelated questions).
+    A refusal clause in the generation prompt acted as a second, literal-minded
+    gate: with all four glass-family chunks in context ("Température de
+    travail : …") the model still answered with the refusal for "températures de
+    fusion", because the exact word was missing.
     """
     from services.rag_service import RAGService
 
@@ -106,7 +106,7 @@ def test_generation_prompt_does_not_refuse_because_of_off_topic_documents():
             mp.setattr(RAGService, name, lambda self: None)
         RAGService.__init__(service, MagicMock())
 
-    prompt = service.system_prompt.lower()
-    assert "hors sujet" in prompt
-    assert "au moins un document" in prompt
-    assert "si le contexte est insuffisant" not in prompt
+    prompt = service.system_prompt
+    assert RAGService.INSUFFICIENT_CONTEXT_MESSAGE not in prompt
+    assert "hors sujet" in prompt.lower()
+    assert "terme voisin" in prompt.lower(), "prompt must allow mapping close terminology"
