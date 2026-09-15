@@ -225,13 +225,13 @@ class MoodleAIAssistantPipeline:
         """Build and compile the PRF conversation graph with cross-encoder reranking.
 
         Pipeline:
-          detect_and_translate_query → parse_query_intent → retrieve_ranked →
+          detect_and_translate_query → parse_query_intent → retrieve_ranked (incl. PRF) →
           assess_relevance → generate
 
         retrieve_ranked pulls a wide pool from the video annotation collection
         and the per-course collections, scores all of it with the reranker and
-        keeps the best few — see its comment block for why the former PRF chain
-        was replaced.
+        keeps the best few, with PRF as a second pass that can only add
+        candidates — see its comment block.
         assess_relevance is a second, independent check — see its docstring for
         why a high rerank score alone isn't sufficient here. Note: this compiled
         graph is linear (add_sequence) and can't branch on assess_relevance's
