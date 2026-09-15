@@ -295,7 +295,18 @@ class RAGService:
                 "- Ne produisez JAMAIS de balises <think> ni de raisonnement interne visible.\n"
                 "- N'inventez JAMAIS d'URLs, de liens, de références bibliographiques ou de citations.\n"
                 "- Basez-vous EXCLUSIVEMENT sur le contexte documentaire fourni. "
-                "Si le contexte est insuffisant ou ne traite pas de la question posée, répondez UNIQUEMENT : "
+                # Retrieval always returns its top-k, so off-topic documents (typically
+                # the nearest annotation clips) ride along with the relevant ones.
+                # assess_relevance was taught this in fc8ea09, but this rule still read
+                # "le contexte" as the whole set: the classifier passed the question,
+                # then the generator refused anyway because of the clips, and appended
+                # follow-ups about them. Refusal is decided upstream; here it is only a
+                # last resort when NOTHING in the context bears on the question.
+                "Le contexte contient souvent des documents hors sujet (par exemple des annotations vidéo "
+                "sur un autre geste) : ignorez-les simplement. S'il existe au moins un document qui traite, "
+                "même partiellement, de la question, répondez à partir de ce document, en précisant au besoin "
+                "ce que le contexte ne couvre pas. "
+                "Uniquement si AUCUN document ne traite de la question, répondez : "
                 f"\"{self.INSUFFICIENT_CONTEXT_MESSAGE}\" "
                 "Ne complétez JAMAIS par des connaissances extérieures au contexte fourni.\n\n"
                 "STRUCTURE DE LA RÉPONSE — adaptez-la à la nature de la question :\n"

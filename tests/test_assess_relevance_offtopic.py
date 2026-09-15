@@ -86,3 +86,27 @@ def test_empty_context_still_refuses_without_calling_the_llm():
     service, captured = _service_with_captured_prompt()
     assert service.assess_relevance(_state([]))["relevance_assessment"] == "INSUFFICIENT"
     assert "prompt" not in captured, "empty context must short-circuit before the LLM call"
+
+
+def test_generation_prompt_does_not_refuse_because_of_off_topic_documents():
+    """The generator must apply the same rule as the classifier.
+
+    Otherwise assess_relevance passes the question and generation refuses anyway
+    because the off-topic clips are in its context (old prompt: 6/9 refusals on
+    the live model for questions the course chunks answered; new prompt: 0/9,
+    while still refusing 6/6 unrelated questions).
+    """
+    from services.rag_service import RAGService
+
+    service = object.__new__(RAGService)
+    service.INSUFFICIENT_CONTEXT_MESSAGE = RAGService.INSUFFICIENT_CONTEXT_MESSAGE
+    with pytest.MonkeyPatch.context() as mp:
+        for name in ("_initialize_embeddings", "_initialize_vector_store",
+                     "_initialize_llm", "_initialize_cross_encoder", "_initialize_langid"):
+            mp.setattr(RAGService, name, lambda self: None)
+        RAGService.__init__(service, MagicMock())
+
+    prompt = service.system_prompt.lower()
+    assert "hors sujet" in prompt
+    assert "au moins un document" in prompt
+    assert "si le contexte est insuffisant" not in prompt
